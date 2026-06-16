@@ -6,9 +6,6 @@
 # hybrid attention (1 full + 3 GatedDeltaNet linear per 4 layers). Text-only
 # RL requires the SGLang VLM input_ids patch (see MEMORY.md).
 #
-# GPU layout (8x B200, default):
-#   GPU 0-1     – Megatron GRPO training (TP=2, DP=1)
-#   GPU 2-7     – SGLang inference (6 engines × TP=1, managed by Slime/Ray)
 #
 # Port layout:
 #   9000        – SGLang router (slime-managed, load-balances engines)
@@ -65,7 +62,6 @@ if [ ! -f "${SLIME_DIR}/train_async.py" ]; then
     echo "  git clone git@github.com:THUDM/slime.git ${SLIME_DIR}"
     exit 1
 fi
-bash "${PROJECT_ROOT}/scripts/patch/patch_slime.sh" "${SLIME_DIR}"
 
 MEGATRON_DIR="${MEGATRON_DIR:-${PROJECT_ROOT}/Megatron-LM}"
 if [ ! -d "${MEGATRON_DIR}/megatron" ]; then
@@ -124,6 +120,10 @@ TOPOLOGY_TEMPLATE="${TOPOLOGY_TEMPLATE:-${SCRIPT_DIR}/topology.yaml}"
 POLAR_CONFIG_TEMPLATE="${POLAR_CONFIG_TEMPLATE:-${SCRIPT_DIR}/polar_config.yaml}"
 TOPOLOGY_PATH="${TOPOLOGY_PATH:-${RUN_DIR}/topology.yaml}"
 CUSTOM_CONFIG_PATH="${CUSTOM_CONFIG_PATH:-${RUN_DIR}/polar_config.yaml}"
+COMPILER_CACHE_ROOT="${COMPILER_CACHE_ROOT:-${RUN_DIR}/compiler_cache}"
+TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-${COMPILER_CACHE_ROOT}/torchinductor}"
+TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-${COMPILER_CACHE_ROOT}/triton}"
+mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 
 # Render YAML templates: only the listed ${VARS} are expanded, so literal
 # $HOME / $... inside polar_config.yaml are left untouched.
@@ -164,13 +164,12 @@ sleep 2
 curl -sf http://127.0.0.1:8080/health || { echo "Polar rollout server not healthy"; exit 1; }
 
 # ── Step 2: Ray + Slime (manages SGLang engines + training) ───────
-# GPU split — defaults are 2 training + 6 rollout (8x B200 single node).
-ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-2}"
-ROLLOUT_NUM_GPUS="${ROLLOUT_NUM_GPUS:-6}"
+ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-4}"
+ROLLOUT_NUM_GPUS="${ROLLOUT_NUM_GPUS:-4}"
 ROLLOUT_NUM_GPUS_PER_ENGINE="${ROLLOUT_NUM_GPUS_PER_ENGINE:-1}"
 ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-4}"
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-16}"
-MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-60000}"
+MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-30000}"
 SGLANG_CONTEXT_LENGTH="${SGLANG_CONTEXT_LENGTH:-50000}"
 
 # Ray sizing — derive total GPUs from the actor/rollout split.
@@ -197,8 +196,11 @@ RUNTIME_ENV_JSON="{
     \"VIRTUAL_ENV\": \"${VIRTUAL_ENV:-${PROJECT_ROOT}/.venv}\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"WANDB_DIR\": \"${PROJECT_ROOT}/logs\",
+    \"TORCHINDUCTOR_CACHE_DIR\": \"${TORCHINDUCTOR_CACHE_DIR}\",
+    \"TRITON_CACHE_DIR\": \"${TRITON_CACHE_DIR}\",
     \"LD_LIBRARY_PATH\": \"${RUNTIME_LD_LIBRARY_PATH}\",
     \"PYTORCH_ALLOC_CONF\": \"max_split_size_mb:2048,expandable_segments:True\",
+    \"PYTORCH_CUDA_ALLOC_CONF\": \"max_split_size_mb:2048,expandable_segments:True\",
     \"NVTE_DEBUG\": \"1\",
     \"NVTE_DEBUG_LEVEL\": \"2\"
   }
@@ -256,6 +258,7 @@ ray job submit --address="http://${RAY_HEAD_IP}:8265" \
     --use-dynamic-batch-size \
     --max-tokens-per-gpu "$MAX_TOKENS_PER_GPU" \
     --log-probs-chunk-size 256 \
+    --distributed-timeout-minutes 30 \
     --advantage-estimator grpo \
     --normalize-advantages \
     --use-tis \

@@ -2,9 +2,9 @@
 # Single-entry launcher for the full SWE-Gym Slime GRPO example.
 #
 # This script bootstraps the pieces that are safe to automate on a cluster:
-# external checkouts, local editable installs, Slime/SGLang patches, SWE-Gym
-# train JSONL data, shared agent CLI assets, base runtime images, Megatron weight
-# conversion, and finally the Polar + Slime training run.
+# external checkouts, local editable installs, Slime/SGLang patches,
+# SWE-Gym train JSONL data, shared agent CLI assets, base runtime images,
+# Megatron weight conversion, and finally the Polar + Slime training run.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
@@ -19,11 +19,13 @@ PYTHON_BIN_DIR="$(cd -- "$(dirname -- "${PYTHON_BIN}")" &>/dev/null && pwd)"
 export PATH="${PYTHON_BIN_DIR}:${PATH}"
 SLIME_DIR="${SLIME_DIR:-${PROJECT_ROOT}/slime}"
 SLIME_REPO="${SLIME_REPO:-https://github.com/THUDM/slime.git}"
-SLIME_REF="${SLIME_REF:-v0.2.4}"
+SLIME_REF="${SLIME_REF:-v0.3.0}"
 
-MEGATRON_DIR="${MEGATRON_DIR:-${PROJECT_ROOT}/Megatron-LM}"
+MEGATRON_DIR="${MEGATRON_DIR:-${PROJECT_ROOT}/tmp/Megatron-LM-slime-v0.3.0}"
 MEGATRON_REPO="${MEGATRON_REPO:-https://github.com/NVIDIA/Megatron-LM.git}"
-MEGATRON_REF="${MEGATRON_REF:-main}"
+# Slime v0.3.0 imports megatron.training.tokenizer, which current Megatron main
+# removed. Keep the default pinned to the compatible 26.04 alpha line.
+MEGATRON_REF="${MEGATRON_REF:-26.04-alpha.rc1}"
 # SWE-Gym's fork of the SWE-bench harness (grades the SWE-Gym instances). Not on
 # PyPI, so installed from git; commit-pinned for reproducibility.
 SWEGYM_PACKAGE_SPEC="${SWEGYM_PACKAGE_SPEC:-swegym @ git+https://github.com/SWE-Gym/SWE-Bench-Package.git@16dd480cce9b27bf111a362d280881c6def5d2a7}"
@@ -217,6 +219,8 @@ require_cmd envsubst  # run.sh uses it to render YAML templates
 clone_if_missing "Slime" "${SLIME_REPO}" "${SLIME_REF}" "${SLIME_DIR}"
 clone_if_missing "Megatron-LM" "${MEGATRON_REPO}" "${MEGATRON_REF}" "${MEGATRON_DIR}"
 
+SLIME_DIR="${SLIME_DIR}" bash "${PROJECT_ROOT}/scripts/patch/patch_slime_router_tokens.sh"
+
 if [ "${INSTALL_EDITABLE}" = "1" ]; then
     # [swebench] is load-bearing even though swegym (installed below) does the actual
     # grading: swegym is a swebench fork that ships NO deps of its own, so it reuses
@@ -235,9 +239,8 @@ if [ "${INSTALL_TRAINING_STACK}" = "1" ]; then
     ensure_training_stack
 fi
 
-bash "${PROJECT_ROOT}/scripts/patch/patch_slime.sh" "${SLIME_DIR}"
 if [ "${APPLY_SGLANG_PATCH}" = "1" ]; then
-    bash "${PROJECT_ROOT}/scripts/patch/patch_sglang.sh"
+    bash "${PROJECT_ROOT}/scripts/patch/patch_sglang_0513_token_metadata.sh"
 fi
 
 "${PYTHON_BIN}" "${SCRIPT_DIR}/prepare_data.py"

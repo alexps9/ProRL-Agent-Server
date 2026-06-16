@@ -1,32 +1,22 @@
-"""Trajectory-aware reward post-processor for Slime.
+"""Dynamic-trace reward post-processor for Slime.
 
-Registered via Slime's ``--custom-reward-post-process-path`` hook.  Treats
-every sample whose ``(group_index, index)`` pair matches as belonging to
-the same trajectory and keeps exactly one reward per trajectory, then
-normalizes across trajectories inside each group.  The normalized value is
-broadcast back to every sample of the trajectory.
+Registered via Slime's ``--custom-reward-post-process-path`` hook.  A Polar
+trajectory can fan out into a variable number of trace samples, and each trace
+keeps its own reward.  The exchangeable unit is still the trajectory, so this
+processor computes per-trace advantages against a leave-one-trajectory-out
+baseline built from other trajectories in the same prompt group.
 
 Adapter contract:
     All Slime samples produced from the same Polar ``SessionResult`` share
-    the same ``Sample.index`` (the trajectory's position within the group).
-    Samples from different sessions in the same group get distinct indices.
-
-FAILED/ABORTED trajectories (agent ERROR or TIMEOUT) are excluded from the
-group baseline: they don't contribute to mean/std, and their own normalized
-reward is forced to 0.  This prevents agent-side failures — which are
-semantically "no outcome" rather than "outcome = 0" — from biasing the
-advantage of the surviving samples in the group.
-
-Degenerate case (one trace per trajectory) collapses to plain GRPO
-group-normalization — no special-casing needed.
+    ``Sample.group_id``. Slime 0.3.0 uses that field to average all trace
+    contributions from one trajectory as one gradient unit.
 """
 
 from __future__ import annotations
 
 import logging
+import statistics
 from typing import Any
-
-import torch
 
 logger = logging.getLogger(__name__)
 
@@ -49,47 +39,85 @@ def post_process_rewards(
         getattr(args, "grpo_std_normalization", False)
     )
 
-    # Key each sample by its trajectory; first-seen reward per trajectory wins.
-    # A trajectory is marked failed if *any* of its traces has FAILED/ABORTED
-    # status (in practice all traces share the session status, but be safe).
-    traj_reward: dict[tuple[int, int], float] = {}
-    traj_failed: dict[tuple[int, int], bool] = {}
-    group_keys: dict[int, list[tuple[int, int]]] = {}
-    key_by_sample: list[tuple[int, int]] = []
+    traj_sample_indices: dict[tuple[Any, Any], list[int]] = {}
+    traj_valid_rewards: dict[tuple[Any, Any], list[float]] = {}
+    traj_failed: dict[tuple[Any, Any], bool] = {}
+    group_keys: dict[Any, list[tuple[Any, Any]]] = {}
+    key_by_sample: list[tuple[Any, Any]] = []
+
     for i, sample in enumerate(samples):
-        group_idx = int(sample.group_index) if sample.group_index is not None else -1
-        traj_idx = int(sample.index) if sample.index is not None else i
-        key = (group_idx, traj_idx)
+        group_idx, key = _trajectory_key(sample, i)
         key_by_sample.append(key)
-        failed = _is_failed_trajectory(sample)
-        if key not in traj_reward:
-            traj_reward[key] = raw_rewards[i]
-            traj_failed[key] = failed
+        if key not in traj_sample_indices:
+            traj_sample_indices[key] = []
+            traj_valid_rewards[key] = []
+            traj_failed[key] = False
             group_keys.setdefault(group_idx, []).append(key)
-        elif failed:
+        traj_sample_indices[key].append(i)
+        if _is_failed_trajectory(sample):
             traj_failed[key] = True
+        elif _has_trainable_tokens(sample):
+            traj_valid_rewards[key].append(raw_rewards[i])
 
-    normalized: dict[tuple[int, int], float] = {}
+    normalized_by_sample = [0.0] * len(samples)
     for keys in group_keys.values():
-        valid_mask = torch.tensor([not traj_failed[k] for k in keys], dtype=torch.bool)
-        if not bool(valid_mask.any()):
-            # All trajectories in this group failed — no signal available.
-            for k in keys:
-                normalized[k] = 0.0
-            continue
-        vals = torch.tensor([traj_reward[k] for k in keys], dtype=torch.float32)
-        valid_vals = vals[valid_mask]
-        vals = vals - valid_vals.mean()
-        if std_norm:
-            vals = vals / (valid_vals.std() + 1e-6) if len(valid_vals) > 1 else torch.zeros_like(vals)
-        # Failed trajectories' loss_mask is already 0, but zeroing here keeps
-        # their advantage out of any downstream stats/logging too.
-        vals = vals * valid_mask.to(vals.dtype)
-        for k, v in zip(keys, vals.tolist(), strict=True):
-            normalized[k] = float(v)
+        valid_keys = [
+            key for key in keys
+            if not traj_failed[key] and traj_valid_rewards[key]
+        ]
+        traj_mean = {
+            key: sum(traj_valid_rewards[key]) / len(traj_valid_rewards[key])
+            for key in valid_keys
+        }
 
-    rewards = [normalized[k] for k in key_by_sample]
-    return raw_rewards, rewards
+        for key in keys:
+            if key not in traj_mean:
+                continue
+            other_means = [
+                traj_mean[other_key]
+                for other_key in valid_keys
+                if other_key != key
+            ]
+            baseline = sum(other_means) / len(other_means) if other_means else 0.0
+            scale = _loo_scale(other_means) if std_norm else 1.0
+            for sample_index in traj_sample_indices[key]:
+                normalized_by_sample[sample_index] = (
+                    raw_rewards[sample_index] - baseline
+                ) / scale
+
+    return raw_rewards, normalized_by_sample
+
+
+def _trajectory_key(sample: Any, sample_position: int) -> tuple[Any, tuple[Any, Any]]:
+    group_idx = _key_value(getattr(sample, "group_index", None), -1)
+    traj_idx = getattr(sample, "group_id", None)
+    if traj_idx is None:
+        traj_idx = getattr(sample, "index", None)
+    return group_idx, (group_idx, _key_value(traj_idx, sample_position))
+
+
+def _key_value(value: Any, default: Any) -> Any:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _loo_scale(other_means: list[float]) -> float:
+    if len(other_means) <= 1:
+        return 1.0
+    return statistics.stdev(other_means) + 1e-6
+
+
+def _has_trainable_tokens(sample: Any) -> bool:
+    if bool(getattr(sample, "remove_sample", False)):
+        return False
+    loss_mask = getattr(sample, "loss_mask", None)
+    if loss_mask is None:
+        return int(getattr(sample, "response_length", 0) or 0) > 0
+    return any(int(value) != 0 for value in loss_mask)
 
 
 def _is_failed_trajectory(sample: Any) -> bool:

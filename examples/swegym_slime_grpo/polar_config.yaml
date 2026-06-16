@@ -8,8 +8,6 @@ polar_max_async_level: 2
 polar_request_timeout: 2400
 polar_callback_host: "127.0.0.1"
 polar_min_complete_accept_fraction: 0.6
-polar_allow_weight_update_overlap: false
-polar_weight_update_pause_timeout: 300
 # Filled by run.sh via envsubst — absolute host paths to assets prepared by
 # prepare_apptainer_images.py. The container mounts and image lookups below
 # reference these through {args.polar_agent_cli_dir} / {args.polar_apptainer_image_dir}.

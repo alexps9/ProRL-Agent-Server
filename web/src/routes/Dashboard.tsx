@@ -46,7 +46,7 @@ export function Dashboard() {
                 <th className="px-3 py-2">status</th>
                 <th className="px-3 py-2">harness</th>
                 <th className="px-3 py-2">reward (avg)</th>
-                <th className="px-3 py-2">trace / completion</th>
+                <th className="px-3 py-2">trace / request</th>
                 <th className="px-3 py-2">progress</th>
                 <th className="px-3 py-2">updated</th>
               </tr>

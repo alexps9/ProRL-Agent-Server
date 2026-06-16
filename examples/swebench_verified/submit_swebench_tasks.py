@@ -4,7 +4,7 @@
 Each task runs an agent in a per-instance container and is graded by the
 official `swebench` harness. Tasks are submitted at once; live progress and
 per-session detail are visible in the dashboard
-(`polar dashboard -c examples/swebench_verified/topology.yaml`).
+(`polar dashboard -c examples/swebench_verified/topology.vllm.yaml`).
 
     uv run python examples/swebench_verified/submit_swebench_tasks.py --harness claude_code --max-tasks 10
     uv run python examples/swebench_verified/submit_swebench_tasks.py --harness codex --max-tasks 50 --num-samples 4
@@ -14,7 +14,6 @@ per-session detail are visible in the dashboard
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
 import time
@@ -31,7 +30,7 @@ from dataset import (
 )
 
 EXAMPLE_DIR = Path(__file__).resolve().parent
-DEFAULT_TOPOLOGY = EXAMPLE_DIR / "topology.yaml"
+DEFAULT_TOPOLOGY = EXAMPLE_DIR / "topology.vllm.yaml"
 POLL_INTERVAL_SECONDS = 15.0
 
 # Pinned versions keep the quickstart stable. Bump intentionally.
@@ -74,7 +73,6 @@ def evaluator_exclude_patterns_for_harness(harness: str) -> list[str]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--harness", required=True, choices=SUPPORTED_HARNESSES)
-    parser.add_argument("--topology", default=os.environ.get("POLAR_TOPOLOGY", str(DEFAULT_TOPOLOGY)))
     parser.add_argument("--num-samples", type=int, default=1, help="Samples per task (pass@k).")
     parser.add_argument("--max-tasks", type=int, default=-1, help="Maximum tasks to submit. -1 = all 500.")
     parser.add_argument("--instance-id", action="append", default=[])
@@ -177,7 +175,7 @@ def print_summary(stats: dict[str, tuple[int, int]], elapsed: float) -> None:
     for iid in sorted(stats):
         r1, total = stats[iid]
         print(f"  {iid:<45} {f'{r1}/{total}':>12}")
-    print("\n  Per-session detail: polar dashboard -c examples/swebench_verified/topology.yaml")
+    print("\n  Per-session detail: polar dashboard -c examples/swebench_verified/topology.vllm.yaml")
 
 
 def main() -> int:
@@ -199,7 +197,7 @@ def main() -> int:
 
     from polar.config import TopologyConfig
 
-    rollout_url = TopologyConfig.load(args.topology).rollout.public_url
+    rollout_url = TopologyConfig.load(DEFAULT_TOPOLOGY).rollout.public_url
     print(f"Submitting {len(instances)} task(s) to {rollout_url} "
           f"(harness={args.harness}, samples={args.num_samples}, backend={args.runtime_backend})")
 

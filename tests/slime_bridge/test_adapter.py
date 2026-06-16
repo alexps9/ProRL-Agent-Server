@@ -17,12 +17,49 @@ class FakeSample:
         FAILED = "failed"
         TRUNCATED = "truncated"
 
-    def __init__(self, **kwargs) -> None:
-        for key, value in kwargs.items():
-            setattr(self, key, value)
+    def __init__(
+        self,
+        *,
+        group_index: int,
+        index: int,
+        group_id: int,
+        prompt,
+        tokens: list[int],
+        response: str,
+        response_length: int,
+        reward,
+        loss_mask: list[int],
+        rollout_log_probs: list[float],
+        status,
+        session_id: str,
+        metadata: dict,
+        remove_sample: bool = False,
+    ) -> None:
+        self.group_index = group_index
+        self.index = index
+        self.group_id = group_id
+        self.prompt = prompt
+        self.tokens = tokens
+        self.response = response
+        self.response_length = response_length
+        self.reward = reward
+        self.loss_mask = loss_mask
+        self.rollout_log_probs = rollout_log_probs
+        self.status = status
+        self.session_id = session_id
+        self.metadata = metadata
+        self.remove_sample = remove_sample
 
 
-def _session_result(*, trace: Trace, status: SessionStatus = SessionStatus.COMPLETED) -> SessionResult:
+def _session_result(
+    *,
+    trace: Trace | None = None,
+    traces: list[Trace] | None = None,
+    status: SessionStatus = SessionStatus.COMPLETED,
+) -> SessionResult:
+    if traces is None:
+        assert trace is not None
+        traces = [trace]
     return SessionResult(
         session_id="session-1",
         task_id="task-1",
@@ -33,7 +70,7 @@ def _session_result(*, trace: Trace, status: SessionStatus = SessionStatus.COMPL
         trajectory=Trajectory(
             status="COMPLETED" if status == SessionStatus.COMPLETED else "TIMEOUT",
             metadata={"rollout_step": 7},
-            traces=[trace],
+            traces=traces,
         ),
     )
 
@@ -62,6 +99,7 @@ def test_session_result_to_samples_converts_trace_to_slime_like_sample(monkeypat
     sample = samples[0]
     assert sample.group_index == 11
     assert sample.index == 2
+    assert sample.group_id == 2
     assert sample.prompt == [{"role": "user", "content": "Say hi"}]
     assert sample.tokens == [1, 2, 3, 4]
     assert sample.response == "[assistant] Hi"
@@ -73,6 +111,37 @@ def test_session_result_to_samples_converts_trace_to_slime_like_sample(monkeypat
     assert sample.metadata["polar"]["group_id"] == "group-1"
     assert sample.metadata["polar"]["policy_version"] == 5
     assert sample.metadata["polar"]["rollout_step"] == 7
+
+
+def test_session_result_to_samples_shares_group_id_across_trace_siblings(monkeypatch) -> None:
+    monkeypatch.setattr(adapter, "_load_sample_type", lambda: FakeSample)
+    traces = [
+        Trace(
+            prompt_ids=[1],
+            response_ids=[2],
+            loss_mask=[1],
+            response_logprobs=[-0.1],
+            reward=1.0,
+        ),
+        Trace(
+            prompt_ids=[3],
+            response_ids=[4],
+            loss_mask=[1],
+            response_logprobs=[-0.2],
+            reward=2.0,
+        ),
+    ]
+
+    samples = session_result_to_samples(
+        _session_result(traces=traces),
+        group_index=11,
+        trajectory_index=7,
+    )
+
+    assert len(samples) == 2
+    assert [sample.index for sample in samples] == [7, 7]
+    assert [sample.group_id for sample in samples] == [7, 7]
+    assert [sample.metadata["polar"]["trace_index"] for sample in samples] == [0, 1]
 
 
 def test_session_result_to_samples_emits_placeholder_when_trace_is_unusable(monkeypatch) -> None:
@@ -91,6 +160,7 @@ def test_session_result_to_samples_emits_placeholder_when_trace_is_unusable(monk
 
     assert len(samples) == 1
     assert samples[0].remove_sample is True
+    assert samples[0].group_id == 2
     assert samples[0].loss_mask == [0]
     assert samples[0].metadata["polar"]["placeholder"] is True
 

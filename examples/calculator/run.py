@@ -4,7 +4,7 @@
 Each harness gets a tiny `calculator.py` with parser stubs, edits it, and the
 evaluator runs `python3 test_calculator.py`. All harnesses are submitted at
 once; live progress and per-session detail are visible in the dashboard
-(`polar dashboard -c examples/calculator/topology.yaml`).
+(`polar dashboard -c examples/calculator/topology.vllm.yaml`).
 
     uv run python examples/calculator/run.py                 # docker (default)
     uv run python examples/calculator/run.py --backend apptainer
@@ -25,7 +25,7 @@ EXAMPLE_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = EXAMPLE_DIR / "assets"
 TEST_FILE = ASSETS_DIR / "test_calculator.py"
 STARTER_FILE = ASSETS_DIR / "calculator.py"
-TOPOLOGY = EXAMPLE_DIR / "topology.yaml"
+DEFAULT_TOPOLOGY = EXAMPLE_DIR / "topology.vllm.yaml"
 RUNTIME_IMAGE = "polar-localhost-calculator:latest"
 NUM_SAMPLES = 4
 # Generous budget: INIT install (npm / pip / venv) shares the per-task budget
@@ -197,7 +197,7 @@ def main() -> int:
 
     from polar.config import TopologyConfig
 
-    rollout_url = TopologyConfig.load(TOPOLOGY).rollout.public_url
+    rollout_url = TopologyConfig.load(DEFAULT_TOPOLOGY).rollout.public_url
     batch_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
     print(f"Submitting {len(HARNESSES)} harnesses to {rollout_url} (backend={backend})")

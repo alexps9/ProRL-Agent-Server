@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from slime_bridge.rollout import (
+    AsyncPolarRolloutWorker,
     _completed_trainable_session_count,
     _low_complete_accept_fraction_rejection_reason,
 )
@@ -10,6 +11,18 @@ from slime_bridge.rollout import (
 
 def _config(threshold: float) -> SimpleNamespace:
     return SimpleNamespace(min_complete_accept_fraction=threshold)
+
+
+def _worker_args() -> SimpleNamespace:
+    return SimpleNamespace(
+        polar_rollout_url="http://rollout:8080",
+        polar_task_template={"agent": {"harness": "codex"}},
+        polar_max_async_level=2,
+        rollout_batch_size=4,
+        n_samples_per_prompt=1,
+        update_weights_interval=1,
+        polar_callback_host="127.0.0.1",
+    )
 
 
 def _task_result(statuses: list[str]) -> SimpleNamespace:
@@ -90,3 +103,15 @@ def test_complete_accept_fraction_requires_trainable_completed_sessions() -> Non
         is not None
     )
 
+
+def test_async_worker_only_admits_requested_groups() -> None:
+    worker = AsyncPolarRolloutWorker(_worker_args(), data_source=SimpleNamespace())
+
+    assert worker._can_admit_group({}, 0) is False
+
+    worker.request_groups(1)
+    assert worker._can_admit_group({}, 0) is True
+    assert worker._can_admit_group({object(): SimpleNamespace()}, 1) is False
+
+    worker._mark_delivered(1)
+    assert worker._can_admit_group({}, 0) is False

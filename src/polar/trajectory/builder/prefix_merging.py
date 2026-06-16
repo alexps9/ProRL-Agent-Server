@@ -226,7 +226,7 @@ class PrefixMergingBuilder(BaseTrajectoryBuilder):
             stats["chains_reconstructed_truncated"] += 1
 
         response_ids = stream_ids[len(prompt_ids):]
-        response_logprobs = self._finalize_logprobs(response_slots)
+        response_logprobs = self._finalize_logprobs(response_slots, loss_mask)
         last_kept_trace = build_trace_from_completion(chain[kept - 1])
 
         return Trace(
@@ -317,11 +317,16 @@ class PrefixMergingBuilder(BaseTrajectoryBuilder):
     @staticmethod
     def _finalize_logprobs(
         slots: list[float | None],
+        loss_mask: list[int],
     ) -> list[float] | None:
-        # Interstitial slots (tool results, chat glue) get 0.0; loss_mask=0
-        # makes the trainer ignore them.
+        if len(slots) != len(loss_mask):
+            raise ValueError("logprob slots length must match loss_mask length")
         if not any(slot is not None for slot in slots):
             return None
+        if any(mask and slot is None for slot, mask in zip(slots, loss_mask)):
+            return None
+        # Interstitial slots (tool results, chat glue) get 0.0; loss_mask=0
+        # makes the trainer ignore them.
         return [slot if slot is not None else 0.0 for slot in slots]
 
     @staticmethod

@@ -15,13 +15,44 @@ def test_get_engine_rejects_unknown_name() -> None:
         get_engine("tgi")
 
 
-def test_sglang_engine_requests_logprobs_and_passes_through() -> None:
+def test_sglang_engine_requests_source_token_extensions() -> None:
     engine = SGLangEngine()
     request = {"messages": []}
     out = engine.prepare_request(request)
     assert out is request and out["logprobs"] is True
-    response = {"choices": [{"message": {"role": "assistant", "content": "hi"}}]}
-    assert engine.normalize_response(response) is response
+    assert out["return_prompt_token_ids"] is True
+    assert out["return_meta_info"] is True
+
+
+def test_sglang_normalize_source_response_to_training_shape() -> None:
+    response = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "hi"},
+                "prompt_token_ids": [1, 2],
+                "logprobs": {
+                    "content": [
+                        {"token": "h", "logprob": -0.1},
+                        {"token": "i", "logprob": -0.2},
+                    ]
+                },
+                "meta_info": {
+                    "output_token_logprobs": [
+                        [-0.1, 10, "h"],
+                        [-0.2, 11, "i"],
+                    ]
+                },
+            }
+        ]
+    }
+
+    out = SGLangEngine().normalize_response(response)
+    choice = out["choices"][0]
+
+    assert choice["input_token_ids"] == [1, 2]
+    assert choice["token_ids"] == [10, 11]
+    assert [entry["token_id"] for entry in choice["logprobs"]["content"]] == [10, 11]
+    assert "meta_info" not in choice
 
 
 def test_vllm_prepare_request_requests_token_ids_and_logprobs() -> None:

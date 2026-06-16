@@ -2,7 +2,7 @@
 
 End-to-end **training** example: train **Qwen3.5-4B** with async **GRPO** on
 **SWE-Gym** tasks, using **Polar** for agent rollouts and **Slime** for training.
-Targets a single node with 8× B200 (2 GPUs train, 6 serve).
+Targets a single node with 8 × {H100, H200, B200} (4 GPUs train, 4 serve).
 
 > Unlike the rollout demos (calculator / count_stars / swebench_verified), this
 > path serves the model with **SGLang**: Slime owns the inference engines and
@@ -26,11 +26,12 @@ export WANDB_API_KEY=<your-key>
 bash examples/swegym_slime_grpo/launch_e2e.sh
 ```
 
-It clones Slime + Megatron-LM, installs the training-stack extras (Transformer
-Engine; Flash Linear Attention; flash-attn on B200), applies the Slime/SGLang
-patches, builds the
+It clones Slime + Megatron-LM, applies the Slime router-token metadata patch and
+the SGLang 0.5.13 token-metadata patch, installs the training-stack extras
+(Transformer Engine; Flash Linear Attention; flash-attn on B200), builds the
 293-task SWE-Gym JSONL, pulls the Apptainer images + shared agent CLIs, converts
-the Qwen weights to torch_dist, then hands off to `run.sh` (Polar services + Ray + the Slime training job).
+the Qwen weights to torch_dist, then hands off to `run.sh` (Polar services + Ray
++ the Slime training job).
 
 ## (Optional) Watch rollouts in the dashboard
 

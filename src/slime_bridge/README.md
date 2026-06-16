@@ -13,17 +13,14 @@ Slime calls one entry point, `generate_rollout_polar_async`, wired in via
 - submits async task batches to `polar_rollout_url` (or a node derived from
   `polar_topology_path`) and collects each result through a local callback
   listener with a polling safety net;
-- tracks rollout ids and policy versions, stamps `{group_id, policy_version,
-  rollout_step}` onto every task, and **drops groups that drift too far
-  off-policy** (`max_off_policy_steps`) while keeping async admission bounded
-  (`max_async_level`);
-- **pauses/resumes gateway generation** around weight updates (the gateway's
-  `/admin/inference/pause` + `/resume`) when overlap is enabled;
+- tracks rollout ids and policy versions, stamps Polar scheduler metadata
+  (`group_id`, `policy_version`, `rollout_step`) onto every task, and keeps
+  async admission bounded to the current Slime rollout request;
 - converts each Polar `Trajectory` back into Slime `Sample`s (one per trace,
-  grouped so the reward post-processor treats them as one trajectory), dropping
-  empty or oversized traces;
-- normalizes rewards GRPO-style per group and zeroes out failed/aborted
-  trajectories.
+  grouped with Slime 0.3.0 `group_id` so all traces from a trajectory count
+  once), dropping empty or oversized traces;
+- computes dynamic-trace leave-one-trajectory-out advantages and zeroes out
+  failed/aborted trajectories.
 
 ## Main files
 
@@ -31,8 +28,7 @@ Slime calls one entry point, `generate_rollout_polar_async`, wired in via
   task payload, the instruction, and the topology that points gateways at Slime's
   SGLang router.
 - `rollout.py`: the async worker (submit → callback/poll → convert), the
-  evaluation path, policy-update coordination, the acceptance filters, and the
-  Slime entry point.
+  evaluation path, the acceptance filters, and the Slime entry point.
 - `_messages.py`: prompt/message flattening shared by rollout + adapter.
 - `adapter.py`: convert a Polar `SessionResult` into Slime `Sample`s.
 - `data_source.py`: `CeilEpochRolloutDataSourceWithBuffer` — rounds the epoch
@@ -43,12 +39,12 @@ Slime calls one entry point, `generate_rollout_polar_async`, wired in via
 ## What the bridge owns
 
 - Turn Slime samples + prompts into Polar task requests and submit async batches.
-- Track rollout ids / policy versions; drop off-policy-stale groups; bound async
-  admission.
+- Track rollout ids / policy versions and bound async admission to the current
+  Slime rollout request.
 - Filter unusable groups (zero trainable tokens, too few completed samples,
   logprob errors) with per-category metrics.
-- Pause/resume gateway generation during weight-update windows.
-- Convert Polar trajectories back into Slime samples; normalize and zero rewards.
+- Convert Polar trajectories back into Slime samples; compute dynamic-trace
+  advantages.
 - Run the evaluation path over `eval_datasets` and emit W&B metrics.
 
 ## Slime installation
@@ -58,16 +54,19 @@ package). The SWE-Gym Slime GRPO example automates this with `launch_e2e.sh`; th
 manual equivalent from the repository root is:
 
 ```bash
-git clone --branch v0.2.4 --depth 1 https://github.com/THUDM/slime.git slime
+git clone --branch v0.3.0 --depth 1 https://github.com/THUDM/slime.git slime
 git clone https://github.com/NVIDIA/Megatron-LM.git Megatron-LM
+bash scripts/patch/patch_slime_router_tokens.sh
 
 uv pip install -e .
 uv pip install -e slime
 uv pip install -e Megatron-LM
-
-bash scripts/patch/patch_slime.sh slime
 ```
 
 Use `SLIME_DIR=/path/to/slime` and `MEGATRON_DIR=/path/to/Megatron-LM` for
-checkouts outside the repository root. The Slime training environment provides
-the heavy dependencies (e.g. `torch`); Polar does not add them.
+checkouts outside the repository root. Run the patch command with the same
+`SLIME_DIR` value before installing Slime. The patch preserves exact
+SGLang-native prompt/output token ids and token-level logprobs in Slime's
+OpenAI-compatible adapter response, so Polar does not retokenize trajectories
+locally. The Slime training environment provides the heavy dependencies
+(e.g. `torch`); Polar does not add them.

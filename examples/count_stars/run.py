@@ -3,9 +3,9 @@
 
 Each harness gets the same image at `/polar/session/workspace/polar_stars.png`,
 inspects it, and writes its star count to `answer.txt`. This exercises image
-input through the local vLLM OpenAI-compatible backend. All harnesses are
+input through the local OpenAI-compatible inference backend. All harnesses are
 submitted at once; per-session detail is visible in the dashboard
-(`polar dashboard -c examples/count_stars/topology.yaml`).
+(`polar dashboard -c examples/count_stars/topology.vllm.yaml`).
 
     uv run python examples/count_stars/run.py                 # docker (default)
     uv run python examples/count_stars/run.py --backend apptainer
@@ -24,7 +24,7 @@ import httpx
 
 EXAMPLE_DIR = Path(__file__).resolve().parent
 IMAGE_FILE = EXAMPLE_DIR / "assets" / "polar_stars.png"
-TOPOLOGY = EXAMPLE_DIR / "topology.yaml"
+DEFAULT_TOPOLOGY = EXAMPLE_DIR / "topology.vllm.yaml"
 RUNTIME_IMAGE = "polar-localhost-count-stars:latest"
 RUNTIME_IMAGE_PATH = "/polar/session/workspace/polar_stars.png"
 NUM_SAMPLES = 4
@@ -114,7 +114,7 @@ def main() -> int:
 
     from polar.config import TopologyConfig
 
-    rollout_url = TopologyConfig.load(TOPOLOGY).rollout.public_url
+    rollout_url = TopologyConfig.load(DEFAULT_TOPOLOGY).rollout.public_url
     batch_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
     print(f"Submitting {len(HARNESSES)} harnesses to {rollout_url} (backend={backend})")

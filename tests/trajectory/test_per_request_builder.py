@@ -72,3 +72,77 @@ def test_per_request_builder_emits_one_trace_per_completion() -> None:
     assert trace.response_messages == [{"role": "assistant", "content": "Hi"}]
     assert trace.tools == [{"type": "function", "function": {"name": "lookup"}}]
     assert trace.response_logprobs == [-0.1, -0.2]
+
+
+def test_per_request_builder_accepts_raw_source_sglang_token_fields() -> None:
+    session = CompletionSession(
+        session_id="session-1",
+        completions=[
+            CompletionRecord(
+                completion_id="completion-1",
+                request={"messages": [{"role": "user", "content": "Say hi"}]},
+                response={
+                    "choices": [
+                        {
+                            "prompt_token_ids": [1, 2],
+                            "message": {"role": "assistant", "content": "Hi"},
+                            "finish_reason": "stop",
+                            "logprobs": {
+                                "content": [
+                                    {"token": "H", "logprob": -0.1},
+                                    {"token": "i", "logprob": -0.2},
+                                ]
+                            },
+                            "meta_info": {
+                                "output_token_logprobs": [
+                                    [-0.1, 3, "H"],
+                                    [-0.2, 4, "i"],
+                                ]
+                            },
+                        }
+                    ]
+                },
+            )
+        ],
+    )
+
+    trajectory = asyncio.run(PerRequestBuilder().build(session))
+    trace = trajectory.traces[0]
+
+    assert trace.prompt_ids == [1, 2]
+    assert trace.response_ids == [3, 4]
+    assert trace.response_logprobs == [-0.1, -0.2]
+
+
+def test_per_request_builder_does_not_mix_unaligned_token_sources() -> None:
+    session = CompletionSession(
+        session_id="session-1",
+        completions=[
+            CompletionRecord(
+                completion_id="completion-1",
+                request={"messages": [{"role": "user", "content": "Say hi"}]},
+                response={
+                    "choices": [
+                        {
+                            "input_token_ids": [1, 2],
+                            "token_ids": [3, 4, 5],
+                            "message": {"role": "assistant", "content": "Hi"},
+                            "finish_reason": "stop",
+                            "logprobs": {
+                                "content": [
+                                    {"token_id": 3, "logprob": -0.1},
+                                    {"token_id": 4, "logprob": -0.2},
+                                ]
+                            },
+                        }
+                    ]
+                },
+            )
+        ],
+    )
+
+    trajectory = asyncio.run(PerRequestBuilder().build(session))
+    trace = trajectory.traces[0]
+
+    assert trace.response_ids == [3, 4, 5]
+    assert trace.response_logprobs is None

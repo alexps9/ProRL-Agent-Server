@@ -28,7 +28,6 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, Request
 
-from polar.config import TopologyConfig
 from polar.rollout.models import TaskResult, TaskStatus
 from slime_bridge._messages import prompt_to_instruction_text
 from slime_bridge.adapter import RolloutLogprobError, session_result_to_samples
@@ -102,92 +101,6 @@ def stop_global_worker() -> None:
         if _global_async_worker is not None:
             _global_async_worker.stop()
             _global_async_worker = None
-
-
-def update_policy_version(args: Any, policy_version: int) -> None:
-    """Optional hook called by Slime after serving weights are updated."""
-    del args
-    with _worker_lock:
-        if _global_async_worker is not None:
-            _global_async_worker.update_policy_version(policy_version)
-
-
-def prepare_policy_update(args: Any, policy_version: int) -> None:
-    """Optional hook called by Slime before overlapping inference weight sync."""
-    logger.info("Preparing Polar bridge for policy_version=%s weight update", policy_version)
-    with _worker_lock:
-        worker = _global_async_worker
-        if worker is not None:
-            worker.pause_admission()
-
-    try:
-        _pause_gateway_generation(args)
-    except Exception:
-        try:
-            _resume_gateway_generation(args)
-        except Exception:
-            logger.warning("Failed to resume Polar gateway after prepare_policy_update error", exc_info=True)
-        with _worker_lock:
-            worker = _global_async_worker
-            if worker is not None:
-                worker.resume_admission()
-        raise
-
-
-def finish_policy_update(args: Any, policy_version: int) -> None:
-    """Optional hook called by Slime after overlapping inference weight sync."""
-    try:
-        _resume_gateway_generation(args)
-    finally:
-        with _worker_lock:
-            worker = _global_async_worker
-            if worker is not None:
-                worker.resume_admission()
-    logger.info("Finished Polar bridge policy_version=%s weight update", policy_version)
-
-
-def _resolve_gateway_url(args: Any) -> str | None:
-    gateway_url = getattr(args, "polar_gateway_url", None)
-    if gateway_url:
-        return str(gateway_url).rstrip("/")
-
-    topology_path = getattr(args, "polar_topology_path", None)
-    if topology_path:
-        topology = TopologyConfig.load(topology_path)
-        if topology.gateway.nodes:
-            return topology.gateway.nodes[0].public_url.rstrip("/")
-    return None
-
-
-def _pause_gateway_generation(args: Any) -> None:
-    gateway_url = _resolve_gateway_url(args)
-    if not gateway_url:
-        raise PolarRolloutSchedulerError(
-            "polar_gateway_url or polar_topology_path is required when "
-            "polar_allow_weight_update_overlap is enabled"
-        )
-
-    timeout_seconds = float(getattr(args, "polar_weight_update_pause_timeout", 300.0))
-    request_timeout = max(timeout_seconds + 5.0, 10.0)
-    with httpx.Client(timeout=request_timeout) as client:
-        response = client.post(
-            f"{gateway_url}/admin/inference/pause",
-            params={"timeout_seconds": timeout_seconds},
-        )
-        response.raise_for_status()
-        logger.info("Paused Polar gateway generation for inference weight update: %s", response.json())
-
-
-def _resume_gateway_generation(args: Any) -> None:
-    gateway_url = _resolve_gateway_url(args)
-    if not gateway_url:
-        return
-
-    request_timeout = float(getattr(args, "polar_gateway_control_timeout", 30.0))
-    with httpx.Client(timeout=max(request_timeout, 5.0)) as client:
-        response = client.post(f"{gateway_url}/admin/inference/resume")
-        response.raise_for_status()
-        logger.info("Resumed Polar gateway generation after inference weight update: %s", response.json())
 
 
 # ---------------------------------------------------------------------------
@@ -470,14 +383,13 @@ class AsyncPolarRolloutWorker:
         self._group_counter = 0
         self._batch_size = batch_size
         self._current_rollout_id = int(getattr(args, "start_rollout_id", 0) or 0)
-        self._policy_version = self._current_rollout_id
+        self._requested_groups = 0
         self._fatal_error: BaseException | None = None
         self._state_lock = threading.RLock()
         self._metrics: dict[str, float] = {}
         self._active_groups = 0
         self._active_sessions = 0
         self._completed_buffer_size = 0
-        self._admission_paused = False
         # Per-task callback plumbing: event fires when the rollout server POSTs
         # the terminal TaskResult to our local listener.
         self._task_events: dict[str, asyncio.Event] = {}
@@ -502,22 +414,13 @@ class AsyncPolarRolloutWorker:
 
     def set_rollout_context(self, rollout_id: int) -> None:
         with self._state_lock:
-            self._current_rollout_id = max(self._current_rollout_id, int(rollout_id))
+            self._current_rollout_id = int(rollout_id)
 
-    def update_policy_version(self, policy_version: int) -> None:
+    def request_groups(self, count: int) -> None:
+        if count <= 0:
+            return
         with self._state_lock:
-            self._policy_version = max(self._policy_version, int(policy_version))
-
-    def pause_admission(self) -> None:
-        with self._state_lock:
-            self._admission_paused = True
-            self._metrics["polar/scheduler/admission_pauses"] = (
-                self._metrics.get("polar/scheduler/admission_pauses", 0.0) + 1.0
-            )
-
-    def resume_admission(self) -> None:
-        with self._state_lock:
-            self._admission_paused = False
+            self._requested_groups += int(count)
 
     def raise_if_failed(self) -> None:
         if self._fatal_error is not None:
@@ -569,6 +472,8 @@ class AsyncPolarRolloutWorker:
             )
             accepted.append(completed)
 
+        if accepted:
+            self._mark_delivered(len(accepted))
         with self._state_lock:
             self._completed_buffer_size = len(self._completed_buffer)
         return accepted
@@ -589,8 +494,7 @@ class AsyncPolarRolloutWorker:
             out["polar/scheduler/completed_buffer"] = float(self._completed_buffer_size)
             out["polar/scheduler/output_queue"] = float(self.output_queue.qsize())
             out["polar/scheduler/deferred_queue"] = float(self.deferred_queue.qsize())
-            out["polar/scheduler/policy_version"] = float(self._policy_version)
-            out["polar/scheduler/admission_paused"] = float(self._admission_paused)
+            out["polar/scheduler/requested_groups"] = float(self._requested_groups)
             return out
 
     # -- internal --------------------------------------------------------------
@@ -839,9 +743,9 @@ class AsyncPolarRolloutWorker:
         active: dict[asyncio.Task[None], _PendingGroup],
         active_session_cost: int,
     ) -> bool:
-        with self._state_lock:
-            if self._admission_paused:
-                return False
+        requested_groups = self._shared_requested_groups()
+        if requested_groups <= 0:
+            return False
         if len(active) >= self.config.max_concurrency:
             return False
         if active_session_cost >= self.config.max_session_concurrency:
@@ -850,8 +754,13 @@ class AsyncPolarRolloutWorker:
             len(active)
             + self.output_queue.qsize()
             + self._shared_completed_buffer_size()
+            + self.deferred_queue.qsize()
         )
-        return owned_groups < (self._batch_size * self.config.max_async_level)
+        admission_window = min(
+            requested_groups,
+            self._batch_size * self.config.max_async_level,
+        )
+        return owned_groups < admission_window
 
     def _task_rejection_reason(self, task_result: TaskResult, group: list[Any]) -> str | None:
         if task_result.status != "completed":
@@ -864,7 +773,15 @@ class AsyncPolarRolloutWorker:
 
     def _rollout_context(self) -> tuple[int, int]:
         with self._state_lock:
-            return self._current_rollout_id, self._policy_version
+            return self._current_rollout_id, self._current_rollout_id
+
+    def _shared_requested_groups(self) -> int:
+        with self._state_lock:
+            return self._requested_groups
+
+    def _mark_delivered(self, count: int) -> None:
+        with self._state_lock:
+            self._requested_groups = max(0, self._requested_groups - int(count))
 
     def _shared_completed_buffer_size(self) -> int:
         with self._state_lock:
@@ -1243,6 +1160,7 @@ def generate_rollout_polar_async(args: Any, rollout_id: int, data_source: Any, e
     async_worker = get_global_async_worker(args, data_source)
     async_worker.set_rollout_context(rollout_id)
     target = getattr(args, "rollout_batch_size", 1)
+    async_worker.request_groups(int(target))
 
     data: list[list[Any]] = []
     start = time.monotonic()
