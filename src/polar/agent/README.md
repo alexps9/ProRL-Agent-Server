@@ -39,7 +39,7 @@ examples may pin their own, but these are the known-good ones.
 
 | Preset | API type | Streaming | Verified version |
 |---|---|---|---|
-| `claude_code` | `anthropic` | `true` | `@anthropic-ai/claude-code@2.1.111` |
+| `claude_code` | `anthropic` | `true` | `@anthropic-ai/claude-code@2.1.111` ² |
 | `codex` | `openai_responses` | `true` | `@openai/codex@0.125.0` |
 | `gemini_cli` | `google` | `true` | `@google/gemini-cli@0.38.1` |
 | `opencode` | `openai_chat` | `true` | `opencode-ai@1.4.6` |
@@ -53,6 +53,12 @@ examples may pin their own, but these are the known-good ones.
 ¹ Install `openhands-tools==1.17.0` at the same version. `1.18+` needs Python
 3.13 (a transitive `lmnr` pin is unsatisfiable on 3.12); pin `1.17.0` on a
 Python 3.12 image.
+
+² `claude_code` stages native Claude Code transcripts for
+[agentreplay export](../agentreplay/README.md) when
+`agent.settings.export_agentreplay` is true (default). Gateway persists them
+under `{rollout.save_dir}/task_*/ses_*/claude_projects/` before wiping the
+session dir; re-stage with `python -m polar.agentreplay --save-dir ... --out ...`.
 
 Each preset routes to the proxy a little differently because each agent reads a
 different env var / config key — e.g. `gemini_cli` maps `GOOGLE_API_*` onto the

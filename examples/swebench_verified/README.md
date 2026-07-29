@@ -84,6 +84,13 @@ uv run python examples/swebench_verified/submit_swebench_tasks.py --harness clau
 
 # a single instance
 uv run python examples/swebench_verified/submit_swebench_tasks.py --harness codex --instance-id django__django-15098
+
+# Claude Code + stage native transcripts for agentreplay (needs rollout.save_dir)
+uv run python examples/swebench_verified/submit_swebench_tasks.py \
+  --harness claude_code --max-tasks 1 \
+  --export-agentreplay ./data/raw_from_polar
+python -m agentreplay sanity ./data/raw_from_polar
+# or later: python -m polar.agentreplay --save-dir ./rollout_results --out ./data/raw_from_polar
 ```
 
 Use Apptainer instead of Docker with `--runtime-backend apptainer`.

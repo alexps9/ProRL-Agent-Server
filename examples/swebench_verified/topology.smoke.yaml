@@ -1,0 +1,22 @@
+# Minimal local smoke topology: reuse an existing vLLM on :8010.
+# Rollout/gateway ports avoid the machine's occupied :8080/:8000.
+rollout:
+  host: 127.0.0.1
+  port: 28080
+  public_url: http://127.0.0.1:28080
+  save_dir: ./rollout_results_smoke
+
+gateway:
+  heartbeat_interval_seconds: 30
+  nodes:
+    - id: localhost-node-01
+      host: 127.0.0.1
+      port: 28100
+      public_url: http://127.0.0.1:28100
+      max_init_workers: 2
+      max_run_workers: 1
+      max_postrun_workers: 2
+      model_served: Qwen2.5-32B-Instruct
+      inference:
+        engine: vllm
+        base_url: http://127.0.0.1:8010

@@ -4,11 +4,40 @@ from __future__ import annotations
 
 import json
 import shlex
+import textwrap
 
 from polar.agent.base import BaseHarness
 from polar.agent.models import AgentSpec
-from polar.runtime.base import BaseRuntime, RUNTIME_AGENT_LOG_DIR, RUNTIME_SESSION_DIR
+from polar.runtime.base import (
+    BaseRuntime,
+    RUNTIME_AGENT_LOG_DIR,
+    RUNTIME_ARTIFACTS_DIR,
+    RUNTIME_SESSION_DIR,
+)
 from polar.runtime.models import ExecInput
+
+# Hook script written into CLAUDE_CONFIG_DIR. Uses CLAUDE_CONFIG_DIR (not
+# expanduser("~/.claude")) so timing events land next to projects/ inside the
+# Polar session bind-mount — required for agentreplay export.
+_TOOL_TIMING_HOOK = textwrap.dedent(
+    """\
+    #!/usr/bin/env python3
+    import json, os, sys, time
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    log_path = os.path.join(config_dir, "tool_timing.jsonl")
+    data = json.load(sys.stdin)
+    entry = {
+        "ts": round(time.time(), 6),
+        "event": data.get("hook_event_name", ""),
+        "session_id": data.get("session_id", ""),
+        "tool_name": data.get("tool_name", ""),
+    }
+    if data.get("tool_input"):
+        entry["tool_input_keys"] = sorted(data["tool_input"].keys())
+    with open(log_path, "a") as f:
+        f.write(json.dumps(entry) + "\\n")
+    """
+)
 
 
 class ClaudeCodeHarness(BaseHarness):
@@ -19,6 +48,7 @@ class ClaudeCodeHarness(BaseHarness):
         # Absolute path outside the workspace — $HOME won't expand in docker
         # exec -e, and a literal "$HOME" dir would get swept into git add -A.
         self._config_dir = f"{RUNTIME_SESSION_DIR}/.claude"
+        self._export_agentreplay = bool(self.settings.get("export_agentreplay", True))
 
     async def setup(self, runtime: BaseRuntime) -> None:
         await runtime.exec(f"mkdir -p {self._config_dir}")
@@ -49,6 +79,57 @@ class ClaudeCodeHarness(BaseHarness):
                 f"mkdir -p {self._config_dir}/skills && "
                 f"cp -r {shlex.quote(self.skills_path)}/* {self._config_dir}/skills/ 2>/dev/null || true"
             )
+
+        if self._export_agentreplay:
+            await self._install_agentreplay_hooks(runtime)
+
+    async def _install_agentreplay_hooks(self, runtime: BaseRuntime) -> None:
+        """Install tool-timing hooks under CLAUDE_CONFIG_DIR for agentreplay."""
+        hooks_dir = f"{self._config_dir}/hooks"
+        hook_path = f"{hooks_dir}/tool_timing.py"
+        await runtime.exec(f"mkdir -p {shlex.quote(hooks_dir)}")
+        await runtime.exec(
+            f"cat > {shlex.quote(hook_path)} << 'POLARHOOK'\n{_TOOL_TIMING_HOOK}POLARHOOK\n"
+            f"chmod 755 {shlex.quote(hook_path)}"
+        )
+
+        hook_cmd = f"python3 {hook_path}"
+        hook_rule = [
+            {
+                "matcher": "",
+                "hooks": [{"type": "command", "command": hook_cmd, "async": True}],
+            }
+        ]
+        hooks = {
+            "PreToolUse": hook_rule,
+            "PostToolUse": hook_rule,
+            "PermissionRequest": hook_rule,
+            "PermissionDenied": hook_rule,
+        }
+
+        # Merge into settings.json without wiping other keys the CLI may need.
+        merge_script = textwrap.dedent(
+            f"""\
+            import json, os
+            path = {self._config_dir!r} + "/settings.json"
+            hooks = {json.dumps(hooks)}
+            settings = {{}}
+            if os.path.exists(path):
+                with open(path) as f:
+                    settings = json.load(f)
+            existing = settings.get("hooks") or {{}}
+            for event, rules in hooks.items():
+                if event not in existing:
+                    existing[event] = rules
+            settings["hooks"] = existing
+            with open(path, "w") as f:
+                json.dump(settings, f, indent=2)
+                f.write("\\n")
+            """
+        )
+        await runtime.exec(
+            f"python3 - << 'POLARMERGE'\n{merge_script}POLARMERGE"
+        )
 
     def run_steps(self, instruction: str) -> list[ExecInput]:
         escaped = shlex.quote(instruction)
@@ -108,3 +189,25 @@ class ClaudeCodeHarness(BaseHarness):
                 env=env,
             )
         ]
+
+    async def postprocess(
+        self, runtime: BaseRuntime, result
+    ) -> None:
+        """Stage Claude Code native transcripts for agentreplay before teardown."""
+        if not self._export_agentreplay:
+            return
+        # Bind-mount makes host artifacts_dir === RUNTIME_ARTIFACTS_DIR.
+        # Copy projects/ + tool_timing into artifacts/claude_projects so the
+        # gateway can persist them to save_dir before session_dir is wiped.
+        dest = f"{RUNTIME_ARTIFACTS_DIR}/claude_projects"
+        projects = f"{self._config_dir}/projects"
+        timing = f"{self._config_dir}/tool_timing.jsonl"
+        await runtime.exec(
+            f"mkdir -p {shlex.quote(dest)} && "
+            f"if [ -d {shlex.quote(projects)} ]; then "
+            f"  cp -a {shlex.quote(projects)}/. {shlex.quote(dest)}/; "
+            f"fi && "
+            f"if [ -f {shlex.quote(timing)} ]; then "
+            f"  cp -a {shlex.quote(timing)} {shlex.quote(dest)}/tool_timing.jsonl; "
+            f"fi"
+        )

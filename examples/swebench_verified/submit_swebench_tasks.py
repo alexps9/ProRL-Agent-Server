@@ -83,6 +83,36 @@ def parse_args() -> argparse.Namespace:
         default="gpt-5.4",
         help="Model name the harness sends; the gateway rewrites it to the served model.",
     )
+    parser.add_argument(
+        "--topology",
+        default=str(DEFAULT_TOPOLOGY),
+        help="Topology YAML (must set rollout.save_dir for agentreplay export).",
+    )
+    parser.add_argument(
+        "--export-agentreplay",
+        default=None,
+        help="After the batch finishes, stage Claude Code transcripts from "
+        "save_dir into this directory (agentreplay projects layout).",
+    )
+    parser.add_argument(
+        "--no-export-agentreplay-hooks",
+        action="store_true",
+        help="Disable Claude Code agentreplay hook install / project staging "
+        "(only relevant for --harness claude_code).",
+    )
+    parser.add_argument(
+        "--anthropic-base-url",
+        default=None,
+        help="If set (e.g. http://127.0.0.1:3456), Claude Code bypasses the Polar "
+        "gateway and talks to this Anthropic-compatible endpoint. Use with "
+        "--harness claude_code. Requires runtime.network=host for loopback proxies.",
+    )
+    parser.add_argument(
+        "--anthropic-api-key",
+        default=None,
+        help="API key Claude Code sends to --anthropic-base-url. Defaults to "
+        "'polar-direct' when --anthropic-base-url is set (many local proxies ignore it).",
+    )
     return parser.parse_args()
 
 
@@ -115,6 +145,23 @@ def select_instances(args: argparse.Namespace) -> list[dict[str, Any]]:
     return instances
 
 
+def agent_spec_for(args: argparse.Namespace) -> dict[str, Any]:
+    agent: dict[str, Any] = {"harness": args.harness, "model_name": args.model_name}
+    if args.harness == "claude_code":
+        agent["settings"] = {
+            "export_agentreplay": not args.no_export_agentreplay_hooks,
+        }
+        if args.anthropic_base_url:
+            # agent.env is merged after Polar's gateway injection, so these win.
+            agent["env"] = {
+                "ANTHROPIC_BASE_URL": args.anthropic_base_url.rstrip("/"),
+                "ANTHROPIC_API_KEY": args.anthropic_api_key or "polar-direct",
+            }
+    elif args.anthropic_base_url:
+        raise SystemExit("--anthropic-base-url is only valid with --harness claude_code")
+    return agent
+
+
 def build_task_request(args: argparse.Namespace, instance: dict[str, Any], batch_id: str) -> dict[str, Any]:
     instance_id = str(instance["instance_id"])
     image = runtime_image_for_instance(instance_id)
@@ -131,7 +178,7 @@ def build_task_request(args: argparse.Namespace, instance: dict[str, Any], batch
             "network": "host",
             "workdir": "/polar/session/workspace",
         },
-        "agent": {"harness": args.harness, "model_name": args.model_name},
+        "agent": agent_spec_for(args),
         "builder": {"strategy": "prefix_merging"},
         "evaluator": {
             "strategy": "swebench_harness",
@@ -142,6 +189,10 @@ def build_task_request(args: argparse.Namespace, instance: dict[str, Any], batch
                 "exclude_patterns": evaluator_exclude_patterns_for_harness(args.harness),
             },
             "refresh_runtime": True,
+        },
+        "metadata": {
+            "benchmark": "swebench_verified",
+            "instance_id": instance_id,
         },
     }
 
@@ -197,9 +248,15 @@ def main() -> int:
 
     from polar.config import TopologyConfig
 
-    rollout_url = TopologyConfig.load(DEFAULT_TOPOLOGY).rollout.public_url
+    topology = TopologyConfig.load(args.topology)
+    rollout_url = topology.rollout.public_url
+    save_dir = topology.rollout.save_dir
     print(f"Submitting {len(instances)} task(s) to {rollout_url} "
           f"(harness={args.harness}, samples={args.num_samples}, backend={args.runtime_backend})")
+    if args.export_agentreplay and not save_dir:
+        raise SystemExit(
+            "--export-agentreplay requires rollout.save_dir in the topology YAML."
+        )
 
     timeout = httpx.Timeout(None, connect=30.0)
     with httpx.Client(base_url=rollout_url, timeout=timeout) as client:
@@ -228,6 +285,18 @@ def main() -> int:
         elapsed = time.monotonic() - t0
 
     print_summary(stats, elapsed)
+
+    if args.export_agentreplay:
+        from polar.agentreplay import export_from_save_dir
+
+        assert save_dir is not None
+        export_stats = export_from_save_dir(save_dir, args.export_agentreplay)
+        print(
+            f"\nAgentreplay staging -> {args.export_agentreplay} "
+            f"({export_stats['sessions']} session(s), "
+            f"{export_stats['main_jsonl']} main jsonl). "
+            f"Next: python -m agentreplay sanity {args.export_agentreplay}"
+        )
     return 0
 
 

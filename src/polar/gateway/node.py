@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 from contextlib import suppress
@@ -63,6 +64,7 @@ class GatewayNodeManager:
         session_base_dir: str | None = None,
         rollout_server_url: str | None = None,
         heartbeat_interval_seconds: int = 30,
+        save_dir: str | None = None,
     ) -> None:
         self.node_id = node_id
         self.gateway_url = gateway_url.rstrip("/")
@@ -75,6 +77,7 @@ class GatewayNodeManager:
         self.evaluators = evaluators
         self.default_runtime = default_runtime
         self._session_base_dir = session_base_dir
+        self._save_dir = Path(save_dir) if save_dir else None
         self._client = httpx.AsyncClient(timeout=30.0)
         self._dispatcher = SessionDispatcher(
             max_init_workers=max_init_workers,
@@ -537,6 +540,7 @@ class GatewayNodeManager:
                 managed.timer,
                 "post-run finished without producing a session result",
             )
+        persisted: SessionResult | None = result
         try:
             normalized = result.model_copy(
                 update={
@@ -545,6 +549,7 @@ class GatewayNodeManager:
                     "error": result.error or result.trajectory.error,
                 }
             )
+            persisted = normalized
             self.session_registry.set_result(request.session_id, normalized)
             self.storage.delete_session(request.session_id)
             if await self._push_result(request.callback_url, normalized):
@@ -552,6 +557,9 @@ class GatewayNodeManager:
                 # status/task_id visible for debugging via the polling endpoint.
                 self.session_registry.clear_result_payload(request.session_id)
         finally:
+            # Persist Claude Code / agentreplay artifacts before wiping the
+            # ephemeral session_dir (bind-mount host path).
+            await self._persist_agentreplay_artifacts(managed, persisted)
             await self._remove_session_dir_best_effort(
                 managed.session_dir, request.session_id
             )
@@ -952,6 +960,64 @@ class GatewayNodeManager:
                 "Failed to stop %s for session %s",
                 label,
                 session_id,
+                exc_info=True,
+            )
+
+    async def _persist_agentreplay_artifacts(
+        self,
+        managed: ManagedSession,
+        result: SessionResult | None,
+    ) -> None:
+        """Copy staged claude_projects into save_dir before session_dir teardown.
+
+        Layout::
+
+            {save_dir}/task_{task_id}/ses_{session_id}/claude_projects/<slug>/...
+            {save_dir}/task_{task_id}/ses_{session_id}/meta.json
+        """
+        if self._save_dir is None:
+            return
+        src = managed.session_dir / "artifacts" / "claude_projects"
+        if not src.is_dir():
+            return
+        request = managed.request
+        dest_root = (
+            self._save_dir
+            / f"task_{request.task_id}"
+            / f"ses_{request.session_id}"
+        )
+        dest_projects = dest_root / "claude_projects"
+
+        def _copy() -> None:
+            dest_root.mkdir(parents=True, exist_ok=True)
+            if dest_projects.exists():
+                shutil.rmtree(dest_projects)
+            shutil.copytree(src, dest_projects)
+            meta = {
+                "task_id": request.task_id,
+                "session_id": request.session_id,
+                "node_id": self.node_id,
+                "harness": request.agent.harness if request.agent else None,
+                "model_name": request.agent.model_name if request.agent else None,
+                "status": result.status if result is not None else None,
+                "error": (result.error if result is not None else None),
+                "metadata": dict(request.metadata or {}),
+            }
+            if result is not None and result.trajectory is not None:
+                traces = result.trajectory.traces or []
+                if traces:
+                    meta["reward"] = traces[-1].reward
+                meta["trajectory_status"] = result.trajectory.status
+            (dest_root / "meta.json").write_text(
+                json.dumps(meta, indent=2, default=str) + "\n"
+            )
+
+        try:
+            await asyncio.to_thread(_copy)
+        except Exception:
+            logger.warning(
+                "Failed to persist agentreplay artifacts for session %s",
+                request.session_id,
                 exc_info=True,
             )
 

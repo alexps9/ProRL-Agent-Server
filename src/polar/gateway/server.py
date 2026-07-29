@@ -111,6 +111,7 @@ def _build_state(topology: TopologyConfig, node_id: str | None) -> GatewayState:
         default_runtime=node.default_runtime,
         rollout_server_url=topology.gateway.rollout_server_url or None,
         heartbeat_interval_seconds=topology.gateway.heartbeat_interval_seconds,
+        save_dir=save_dir if save_dir else None,
     )
     return GatewayState(
         topology=topology,
