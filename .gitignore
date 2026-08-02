@@ -121,3 +121,8 @@ docs/
 # Dashboard frontend build artifacts
 web/node_modules/
 web/dist/
+
+# Large local SWE-bench / agentreplay artifacts
+examples/swebench_verified/agentreplay_classified/
+examples/swebench_verified/agentreplay_converted/
+examples/swebench_verified/agentreplay_export/

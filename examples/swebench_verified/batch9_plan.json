@@ -1,0 +1,802 @@
+[
+  {
+    "instance_id": "pylint-dev__pylint-4551",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 4,
+    "f2p": 10,
+    "score": 40.01
+  },
+  {
+    "instance_id": "pydata__xarray-6992",
+    "tag": "fresh",
+    "difficulty": ">4 hours",
+    "files": 2,
+    "f2p": 12,
+    "score": 34.62
+  },
+  {
+    "instance_id": "sympy__sympy-16597",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 6,
+    "f2p": 3,
+    "score": 34.24
+  },
+  {
+    "instance_id": "astropy__astropy-13398",
+    "tag": "retry",
+    "difficulty": "1-4 hours",
+    "files": 4,
+    "f2p": 4,
+    "score": 33.38
+  },
+  {
+    "instance_id": "django__django-16560",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 2,
+    "f2p": 8,
+    "score": 32.9
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-25775",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 3,
+    "f2p": 7,
+    "score": 30.54
+  },
+  {
+    "instance_id": "django__django-16256",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 9,
+    "score": 30.14
+  },
+  {
+    "instance_id": "django__django-14011",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 2,
+    "f2p": 17,
+    "score": 29.63
+  },
+  {
+    "instance_id": "django__django-16263",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 4,
+    "f2p": 3,
+    "score": 28.83
+  },
+  {
+    "instance_id": "django__django-11400",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 3,
+    "f2p": 6,
+    "score": 28.51
+  },
+  {
+    "instance_id": "pylint-dev__pylint-4604",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 21,
+    "score": 28.42
+  },
+  {
+    "instance_id": "django__django-14315",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 2,
+    "f2p": 11,
+    "score": 26.66
+  },
+  {
+    "instance_id": "django__django-13212",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 2,
+    "f2p": 5,
+    "score": 26.01
+  },
+  {
+    "instance_id": "django__django-13195",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 3,
+    "f2p": 5,
+    "score": 25.2
+  },
+  {
+    "instance_id": "django__django-11276",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 26,
+    "score": 25.12
+  },
+  {
+    "instance_id": "django__django-15629",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 4,
+    "f2p": 2,
+    "score": 25.1
+  },
+  {
+    "instance_id": "django__django-11532",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 5,
+    "f2p": 1,
+    "score": 24.91
+  },
+  {
+    "instance_id": "django__django-13128",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 1,
+    "f2p": 7,
+    "score": 24.49
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-7590",
+    "tag": "fresh",
+    "difficulty": ">4 hours",
+    "files": 3,
+    "f2p": 1,
+    "score": 24.33
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-25122",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 12,
+    "score": 24.16
+  },
+  {
+    "instance_id": "django__django-13279",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 9,
+    "score": 23.72
+  },
+  {
+    "instance_id": "pydata__xarray-4356",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 8,
+    "score": 23.56
+  },
+  {
+    "instance_id": "django__django-13121",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 4,
+    "f2p": 1,
+    "score": 22.09
+  },
+  {
+    "instance_id": "django__django-13344",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 3,
+    "f2p": 2,
+    "score": 21.71
+  },
+  {
+    "instance_id": "pylint-dev__pylint-6386",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 4,
+    "f2p": 1,
+    "score": 21.62
+  },
+  {
+    "instance_id": "pylint-dev__pylint-8898",
+    "tag": "retry",
+    "difficulty": "1-4 hours",
+    "files": 3,
+    "f2p": 1,
+    "score": 21.31
+  },
+  {
+    "instance_id": "sympy__sympy-14248",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 3,
+    "f2p": 2,
+    "score": 20.98
+  },
+  {
+    "instance_id": "psf__requests-2317",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 8,
+    "score": 20.69
+  },
+  {
+    "instance_id": "django__django-11451",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 6,
+    "score": 20.02
+  },
+  {
+    "instance_id": "django__django-14631",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 2,
+    "f2p": 2,
+    "score": 19.4
+  },
+  {
+    "instance_id": "sympy__sympy-21930",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 6,
+    "score": 19.36
+  },
+  {
+    "instance_id": "django__django-11885",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 2,
+    "f2p": 1,
+    "score": 19.09
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-10673",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 3,
+    "f2p": 1,
+    "score": 18.95
+  },
+  {
+    "instance_id": "sympy__sympy-20438",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 3,
+    "f2p": 2,
+    "score": 18.66
+  },
+  {
+    "instance_id": "django__django-10973",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 5,
+    "score": 18.64
+  },
+  {
+    "instance_id": "django__django-15957",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 1,
+    "f2p": 4,
+    "score": 18.53
+  },
+  {
+    "instance_id": "pydata__xarray-3993",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 2,
+    "f2p": 2,
+    "score": 18.39
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-8593",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 2,
+    "score": 17.8
+  },
+  {
+    "instance_id": "django__django-12406",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 3,
+    "score": 17.57
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-14623",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 3,
+    "f2p": 1,
+    "score": 17.4
+  },
+  {
+    "instance_id": "django__django-14376",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 2,
+    "f2p": 3,
+    "score": 17.21
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-8548",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 2,
+    "f2p": 1,
+    "score": 16.86
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-12682",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 1,
+    "score": 16.81
+  },
+  {
+    "instance_id": "psf__requests-1766",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 6,
+    "score": 16.71
+  },
+  {
+    "instance_id": "sympy__sympy-22080",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 3,
+    "score": 16.56
+  },
+  {
+    "instance_id": "psf__requests-1921",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 6,
+    "score": 16.41
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-7462",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 2,
+    "f2p": 2,
+    "score": 16.38
+  },
+  {
+    "instance_id": "astropy__astropy-8707",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 1,
+    "score": 16.26
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-21568",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 4,
+    "score": 15.89
+  },
+  {
+    "instance_id": "sympy__sympy-12489",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 1,
+    "f2p": 1,
+    "score": 15.49
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-7748",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 2,
+    "score": 15.34
+  },
+  {
+    "instance_id": "pylint-dev__pylint-4661",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 1,
+    "score": 15.22
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-24870",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 1,
+    "score": 14.69
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-8120",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 1,
+    "score": 14.56
+  },
+  {
+    "instance_id": "sympy__sympy-19783",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 2,
+    "score": 14.44
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-8551",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 1,
+    "score": 14.24
+  },
+  {
+    "instance_id": "pydata__xarray-6744",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 3,
+    "score": 14.22
+  },
+  {
+    "instance_id": "pytest-dev__pytest-5840",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 2,
+    "score": 14.06
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-22865",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 3,
+    "score": 14.01
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-11445",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 2,
+    "score": 13.78
+  },
+  {
+    "instance_id": "sympy__sympy-14531",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 2,
+    "score": 13.69
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-7985",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 2,
+    "score": 13.53
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-8621",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 2,
+    "score": 13.03
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-8035",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 1,
+    "score": 12.73
+  },
+  {
+    "instance_id": "astropy__astropy-14539",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 2,
+    "score": 12.46
+  },
+  {
+    "instance_id": "sympy__sympy-13852",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 1,
+    "f2p": 1,
+    "score": 12.41
+  },
+  {
+    "instance_id": "astropy__astropy-12907",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 2,
+    "score": 12.37
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-26194",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 2,
+    "score": 12.23
+  },
+  {
+    "instance_id": "mwaskom__seaborn-3187",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 2,
+    "score": 12.2
+  },
+  {
+    "instance_id": "sympy__sympy-18199",
+    "tag": "fresh",
+    "difficulty": "1-4 hours",
+    "files": 1,
+    "f2p": 1,
+    "score": 12.04
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-20676",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 2,
+    "score": 12.03
+  },
+  {
+    "instance_id": "astropy__astropy-14182",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 1,
+    "score": 11.97
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-24570",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 2,
+    "score": 11.89
+  },
+  {
+    "instance_id": "pylint-dev__pylint-6903",
+    "tag": "retry",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 1,
+    "score": 11.81
+  },
+  {
+    "instance_id": "sympy__sympy-20154",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 2,
+    "score": 11.77
+  },
+  {
+    "instance_id": "pytest-dev__pytest-7324",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 3,
+    "score": 11.7
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-14983",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 2,
+    "score": 11.69
+  },
+  {
+    "instance_id": "sympy__sympy-17655",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 2,
+    "score": 11.46
+  },
+  {
+    "instance_id": "pytest-dev__pytest-8399",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 2,
+    "f2p": 1,
+    "score": 11.37
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-13779",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 2,
+    "score": 11.16
+  },
+  {
+    "instance_id": "pylint-dev__pylint-7277",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 1,
+    "score": 11.16
+  },
+  {
+    "instance_id": "astropy__astropy-7671",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.99
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-10297",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.93
+  },
+  {
+    "instance_id": "pylint-dev__pylint-4970",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.87
+  },
+  {
+    "instance_id": "astropy__astropy-8872",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.8
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-26466",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.79
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-25973",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.76
+  },
+  {
+    "instance_id": "astropy__astropy-7606",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.67
+  },
+  {
+    "instance_id": "astropy__astropy-14365",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.64
+  },
+  {
+    "instance_id": "astropy__astropy-7336",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.5
+  },
+  {
+    "instance_id": "pytest-dev__pytest-7521",
+    "tag": "retry",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 2,
+    "score": 10.49
+  },
+  {
+    "instance_id": "astropy__astropy-7166",
+    "tag": "retry",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.49
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-25232",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.48
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-24970",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.43
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-14629",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.38
+  },
+  {
+    "instance_id": "astropy__astropy-14096",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.37
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-11310",
+    "tag": "fresh",
+    "difficulty": "<15 min fix",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.33
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-24637",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.33
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-25960",
+    "tag": "fresh",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.29
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-26323",
+    "tag": "retry",
+    "difficulty": "15 min - 1 hour",
+    "files": 1,
+    "f2p": 1,
+    "score": 10.27
+  }
+]

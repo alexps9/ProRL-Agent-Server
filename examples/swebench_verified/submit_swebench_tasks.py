@@ -111,9 +111,98 @@ def parse_args() -> argparse.Namespace:
         "--anthropic-api-key",
         default=None,
         help="API key Claude Code sends to --anthropic-base-url. Defaults to "
-        "'polar-direct' when --anthropic-base-url is set (many local proxies ignore it).",
+        "'polar-direct' when --anthropic-base-url is set (many local proxies ignore it). "
+        "Also copied to ANTHROPIC_AUTH_TOKEN (DeepSeek Claude Code docs).",
+    )
+    parser.add_argument(
+        "--haiku-model",
+        default=None,
+        help="Override ANTHROPIC_DEFAULT_HAIKU_MODEL / CLAUDE_CODE_SUBAGENT_MODEL "
+        "(e.g. deepseek-v4-flash while the main model is deepseek-v4-pro[1m]).",
+    )
+    parser.add_argument(
+        "--effort-level",
+        default=None,
+        help="Set CLAUDE_CODE_EFFORT_LEVEL (e.g. max for DeepSeek).",
+    )
+    parser.add_argument(
+        "--openai-base-url",
+        default=None,
+        help="If set, override OPENAI_BASE_URL for the harness (e.g. a local "
+        "vLLM with tool-calling). Useful for qwen_code A/B without restarting "
+        "the Polar gateway inference target. Requires runtime.network=host.",
+    )
+    parser.add_argument(
+        "--openai-api-key",
+        default=None,
+        help="API key paired with --openai-base-url. Defaults to 'polar-direct'.",
+    )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help="Claude Code --max-turns. Raise this (e.g. 80-150) to allow longer "
+        "traces instead of stopping early. Only relevant for --harness claude_code.",
+    )
+    parser.add_argument(
+        "--append-system-prompt",
+        default=None,
+        help="Custom --append-system-prompt for claude_code. Overrides "
+        "--encourage-subagents' default text if both are given.",
+    )
+    parser.add_argument(
+        "--encourage-subagents",
+        action="store_true",
+        help="Append a system prompt nudging Claude Code to do thorough, wide "
+        "exploration and delegate independent research to subagents via the "
+        "Task tool, to lengthen the trace and exercise subagent spawning.",
+    )
+    parser.add_argument(
+        "--disallowed-tools",
+        action="append",
+        default=[],
+        help="Tool name(s) to pass to Claude Code --disallowedTools. Can be "
+        "repeated. Defaults to blocking AskUserQuestion (see "
+        "--allow-ask-user-question) since these runs are non-interactive.",
+    )
+    parser.add_argument(
+        "--allow-ask-user-question",
+        action="store_true",
+        help="Do not auto-block the AskUserQuestion tool. By default it is "
+        "disallowed because there is no user to answer in a batch run, which "
+        "otherwise causes the agent to give up immediately on ambiguous-looking "
+        "issues (near-empty trace).",
     )
     return parser.parse_args()
+
+
+_NON_INTERACTIVE_PROMPT = (
+    "You are running fully non-interactively in a batch harness: there is no "
+    "human available to answer questions or approve plans. Never wait for "
+    "clarification and never treat the task text as a discussion to respond "
+    "to - it is always an issue to fix in the checked-out repo. Use your best "
+    "judgment, pick the most reasonable interpretation, and proceed directly "
+    "to investigating and fixing the code."
+)
+
+_SUBAGENT_SYSTEM_PROMPT = (
+    _NON_INTERACTIVE_PROMPT
+    + " Maximize parallel subagent use via the Agent tool (also called Task) — "
+    "this is mandatory, not optional. Before editing code, spawn at least "
+    "3–5 Agent/Task subagents in the same turn (or back-to-back) covering "
+    "independent angles: (1) locate relevant modules/symbols, (2) find call "
+    "sites and related APIs, (3) find existing tests and reproduction paths, "
+    "(4) survey similar patterns elsewhere in the repo, (5) check "
+    "docs/changelog/recent related commits if useful. Prefer Agent/Task over "
+    "doing broad Grep/Glob/Read yourself. After proposing a fix, spawn at "
+    "least 2 more subagents: one to verify the fix against the "
+    "issue/reproduction, and one to hunt for other places needing the same "
+    "change or regressions. Keep spawning new subagents whenever a new "
+    "independent question appears; do not serialize research that can be "
+    "parallelized. Work thoroughly and do not stop early: deepen "
+    "investigation with additional Agent/Task calls until the fix is solid. "
+    "Act via tool calls; keep narration brief."
+)
 
 
 def runtime_image_for_backend(image: str, backend: str) -> str:
@@ -148,17 +237,47 @@ def select_instances(args: argparse.Namespace) -> list[dict[str, Any]]:
 def agent_spec_for(args: argparse.Namespace) -> dict[str, Any]:
     agent: dict[str, Any] = {"harness": args.harness, "model_name": args.model_name}
     if args.harness == "claude_code":
-        agent["settings"] = {
+        settings: dict[str, Any] = {
             "export_agentreplay": not args.no_export_agentreplay_hooks,
         }
+        if args.max_turns is not None:
+            settings["max_turns"] = args.max_turns
+        system_prompt = args.append_system_prompt
+        if system_prompt is None:
+            system_prompt = _SUBAGENT_SYSTEM_PROMPT if args.encourage_subagents else _NON_INTERACTIVE_PROMPT
+        if system_prompt:
+            settings["append_system_prompt"] = system_prompt
+        disallowed_tools = list(args.disallowed_tools)
+        if not args.allow_ask_user_question and "AskUserQuestion" not in disallowed_tools:
+            disallowed_tools.append("AskUserQuestion")
+        if disallowed_tools:
+            # claude_code preset passes this straight through as
+            # `--disallowedTools <value>`, which the CLI expects comma-separated.
+            settings["disallowed_tools"] = ",".join(disallowed_tools)
+        if args.effort_level:
+            settings["effort_level"] = args.effort_level
+        agent["settings"] = settings
         if args.anthropic_base_url:
             # agent.env is merged after Polar's gateway injection, so these win.
-            agent["env"] = {
+            # DeepSeek's Claude Code guide uses ANTHROPIC_AUTH_TOKEN; set both.
+            # https://api-docs.deepseek.com/zh-cn/quick_start/agent_integrations/claude_code
+            key = args.anthropic_api_key or "polar-direct"
+            env = {
                 "ANTHROPIC_BASE_URL": args.anthropic_base_url.rstrip("/"),
-                "ANTHROPIC_API_KEY": args.anthropic_api_key or "polar-direct",
+                "ANTHROPIC_API_KEY": key,
+                "ANTHROPIC_AUTH_TOKEN": key,
             }
+            if args.haiku_model:
+                env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = args.haiku_model
+                env["CLAUDE_CODE_SUBAGENT_MODEL"] = args.haiku_model
+            agent["env"] = env
     elif args.anthropic_base_url:
         raise SystemExit("--anthropic-base-url is only valid with --harness claude_code")
+    if args.openai_base_url:
+        env = dict(agent.get("env") or {})
+        env["OPENAI_BASE_URL"] = args.openai_base_url.rstrip("/")
+        env["OPENAI_API_KEY"] = args.openai_api_key or "polar-direct"
+        agent["env"] = env
     return agent
 
 

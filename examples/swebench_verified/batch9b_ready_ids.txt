@@ -1,0 +1,2 @@
+sympy__sympy-19040
+pytest-dev__pytest-10081

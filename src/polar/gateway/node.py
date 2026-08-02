@@ -40,6 +40,15 @@ from polar.trajectory.registry import StrategyRegistry
 
 logger = logging.getLogger(__name__)
 
+# Fixed budget for harness.postprocess(), independent of the session's main
+# execution deadline. Without this, a run that consumes its full timeout
+# leaves zero budget for postprocess, so `_await_with_budget` raises
+# GatewayExecutionTimeout *before* the postprocess coroutine is ever awaited
+# (silently dropping any artifacts staged by the harness, e.g. Claude Code's
+# native transcripts) instead of actually running it with a bounded grace
+# period.
+_POSTPROCESS_GRACE_SECONDS = 120.0
+
 
 class GatewayExecutionTimeout(TimeoutError):
     """Raised when a session exhausts its shared gateway execution budget."""
@@ -312,6 +321,8 @@ class GatewayNodeManager:
         managed.timer.mark("run", "started")
 
         harness: BaseHarness | None = None
+        runtime: BaseRuntime | None = None
+        agent_result: AgentRunResult | None = None
         try:
             runtime = managed.runtime
             if runtime is None:
@@ -328,15 +339,10 @@ class GatewayNodeManager:
             env = self._runtime_env(request, managed, include_agent_env=True)
             agent_result = await self._run_exec_inputs(runtime, steps, env, managed)
 
-            # Postprocess always runs so harnesses can collect artifacts from
-            # failed or timed-out agent runs before post-run evaluation.
-            await self._await_with_budget(harness.postprocess(runtime, agent_result), managed)
-            managed.agent_result = agent_result
-
         except GatewayExecutionTimeout as exc:
             # Don't set final_result — let _handle_postrun build a partial
             # trajectory from the completions captured so far.
-            managed.agent_result = AgentRunResult(
+            agent_result = AgentRunResult(
                 status="timeout", return_code=-1, error=str(exc),
             )
         except Exception as exc:
@@ -350,6 +356,19 @@ class GatewayNodeManager:
                     f"agent execution failed: {exc}",
                 )
         finally:
+            # Postprocess always runs -- with its own fixed grace budget,
+            # never the (possibly already-exhausted) main session budget --
+            # so harnesses can collect artifacts from failed or timed-out
+            # agent runs before post-run evaluation / teardown.
+            if harness is not None and runtime is not None and agent_result is not None:
+                try:
+                    await self._await_with_grace(harness.postprocess(runtime, agent_result))
+                except Exception:
+                    logger.exception(
+                        "postprocess failed for session %s", request.session_id
+                    )
+            if agent_result is not None:
+                managed.agent_result = agent_result
             if harness is not None:
                 managed.postrun_steps = harness.postrun_steps()
             managed.timer.mark("run", "finished")
@@ -909,6 +928,15 @@ class GatewayNodeManager:
             )
         except asyncio.TimeoutError as exc:
             raise GatewayExecutionTimeout("session execution timeout") from exc
+
+    @staticmethod
+    async def _await_with_grace(
+        awaitable,
+        grace_seconds: float = _POSTPROCESS_GRACE_SECONDS,
+    ):
+        """Await with a fixed grace budget, independent of the session's main
+        execution deadline (which may already be exhausted)."""
+        return await asyncio.wait_for(awaitable, timeout=grace_seconds)
 
     @staticmethod
     def _start_execution_deadline(managed: ManagedSession) -> None:

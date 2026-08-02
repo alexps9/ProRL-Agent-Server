@@ -168,6 +168,8 @@ class ClaudeCodeHarness(BaseHarness):
         # Model config: if model_name is set, use --model flag and pin all tier
         # aliases to the same model so claude-code doesn't try to route a
         # sub-agent / fallback request back to api.anthropic.com.
+        # Aliases already present in agent.env (e.g. DeepSeek flash for haiku /
+        # subagents) are preserved.
         model_flag = ""
         if self.model_name:
             model_flag = f" --model {shlex.quote(self.model_name)}"
@@ -178,7 +180,10 @@ class ClaudeCodeHarness(BaseHarness):
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL",
                 "CLAUDE_CODE_SUBAGENT_MODEL",
             ):
-                env[alias] = self.model_name
+                if alias not in self.env:
+                    env[alias] = self.model_name
+        if self.settings.get("effort_level"):
+            env["CLAUDE_CODE_EFFORT_LEVEL"] = str(self.settings["effort_level"])
 
         return [
             ExecInput(

@@ -13,9 +13,9 @@ gateway:
       host: 127.0.0.1
       port: 28100
       public_url: http://127.0.0.1:28100
-      max_init_workers: 2
-      max_run_workers: 1
-      max_postrun_workers: 2
+      max_init_workers: 8
+      max_run_workers: 8
+      max_postrun_workers: 8
       model_served: Qwen2.5-32B-Instruct
       inference:
         engine: vllm
