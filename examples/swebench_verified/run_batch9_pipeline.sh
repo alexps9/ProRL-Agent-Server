@@ -33,7 +33,7 @@ has_image() {
 
 is_done() { grep -qxF "$1" "$DONE_FILE"; }
 
-bash /home/songyang/agents/start_claude_llama_proxy.sh >>/tmp/claude_llama_proxy.log 2>&1 || true
+bash examples/swebench_verified/start_claude_llama_proxy.sh >>/tmp/claude_llama_proxy.log 2>&1 || true
 curl -fsS -m 5 "${PROXY}/health" >/dev/null
 curl -fsS -m 5 http://127.0.0.1:28080/health >/dev/null
 

@@ -12,7 +12,7 @@ TIMEOUT="${TIMEOUT:-10800}"
 MODEL="${MODEL:-claude-opus-4-8}"
 PROXY="${PROXY:-http://127.0.0.1:3456}"
 
-bash /home/songyang/agents/start_claude_llama_proxy.sh >>/tmp/claude_llama_proxy.log 2>&1 || true
+bash examples/swebench_verified/start_claude_llama_proxy.sh >>/tmp/claude_llama_proxy.log 2>&1 || true
 curl -fsS -m 5 "${PROXY}/health" >/dev/null
 curl -fsS -m 5 http://127.0.0.1:28080/health >/dev/null
 

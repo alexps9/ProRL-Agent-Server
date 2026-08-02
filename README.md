@@ -67,6 +67,8 @@ cd web && npm install && npm run build
 - [Count Stars](examples/count_stars/README.md): minimal test for VLM.
 - [SWE-bench Verified](examples/swebench_verified/README.md): benchmark-style
   evaluation on SWE-bench Verified tasks.
+- [Terminal-Bench (Harbor)](examples/terminal_bench/README.md): Harbor-style
+  terminal tasks with optional Claude Code → agentreplay export.
 - [SWE-Gym Slime GRPO](examples/swegym_slime_grpo/README.md): training
   path that connects Polar rollouts to Slime.
 
