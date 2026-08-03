@@ -265,12 +265,11 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
         if not text:
             continue
 
-        norm_role = "assistant" if role == "assistant" else "user"
-        prev = messages[-1] if messages else None
-        if prev and prev.get("role") == norm_role and not prev.get("tool_calls"):
-            prev["content"] = f"{prev.get('content') or ''}\n\n{text}".strip()
-        else:
-            messages.append({"role": norm_role, "content": text})
+        # Consecutive same-role turns are passed through rather than glued
+        # together with a blank line: upstream accepts them (verified for both
+        # roles) and merging would silently reshape the prompt.
+        messages.append({"role": "assistant" if role == "assistant" else "user",
+                         "content": text})
 
     out_body: dict[str, Any] = {
         "model": map_model(body.get("model")),
