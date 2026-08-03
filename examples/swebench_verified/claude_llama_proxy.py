@@ -18,20 +18,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 HOST = os.environ.get("CLAUDE_LLAMA_PROXY_HOST", "127.0.0.1")
-DEBUG = os.environ.get("CLAUDE_LLAMA_DEBUG", "1") not in ("0", "false", "False", "")
-DEBUG_LOG_PATH = os.environ.get("CLAUDE_LLAMA_DEBUG_LOG", "/tmp/claude_llama_proxy_debug.log")
-_REQUEST_COUNTER = 0
-
-
-def _debug(req_id: int, msg: str) -> None:
-    if not DEBUG:
-        return
-    line = f"[{time.strftime('%H:%M:%S')}] req={req_id} {msg}\n"
-    try:
-        with open(DEBUG_LOG_PATH, "a") as f:
-            f.write(line)
-    except OSError:
-        pass
 PORT = int(os.environ.get("CLAUDE_LLAMA_PROXY_PORT", "3456"))
 UPSTREAM = os.environ.get(
     "CLAUDE_LLAMA_UPSTREAM",
@@ -40,8 +26,21 @@ UPSTREAM = os.environ.get(
 # Required: set CLAUDE_LLAMA_API_KEY in the environment (no default).
 API_KEY = os.environ.get("CLAUDE_LLAMA_API_KEY", "").strip()
 DEFAULT_MODEL = os.environ.get("CLAUDE_LLAMA_MODEL", "claude-4-8-opus-genai")
-
 FORCE_MODEL = os.environ.get("CLAUDE_LLAMA_FORCE_MODEL") or None
+DEBUG = os.environ.get("CLAUDE_LLAMA_DEBUG", "1") not in ("0", "false", "False", "")
+DEBUG_LOG_PATH = os.environ.get("CLAUDE_LLAMA_DEBUG_LOG", "/tmp/claude_llama_proxy_debug.log")
+
+_REQUEST_COUNTER = 0
+
+
+def _debug(req_id: int, msg: str) -> None:
+    if not DEBUG:
+        return
+    try:
+        with open(DEBUG_LOG_PATH, "a") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] req={req_id} {msg}\n")
+    except OSError:
+        pass
 
 MODEL_MAP = {
     "claude-opus-4-8": "claude-4-8-opus-genai",
@@ -188,7 +187,11 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
     if "max_tokens" in body:
         # Cap oversized Claude Code defaults for upstream gateways
         out_body["max_tokens"] = min(int(body["max_tokens"]), 16384)
-    if "temperature" in body:
+    # Claude 4.8+ reject an explicit `temperature` unless it is exactly the
+    # default 1.0 ("deprecated for this model"). Sending the default is a no-op,
+    # so drop it; anything else is a deliberate choice and stays, so that an
+    # unsupported value fails loudly instead of being silently ignored.
+    if "temperature" in body and body["temperature"] != 1:
         out_body["temperature"] = body["temperature"]
     if "stop_sequences" in body:
         out_body["stop"] = body["stop_sequences"]
@@ -382,7 +385,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             ant = self._complete(oai, model, req_id)
             if stream:
-                self._send_sse(ant, model)
+                self._send_sse(ant)
             else:
                 self._send(200, json.dumps(ant).encode())
         except urllib.error.HTTPError as e:
@@ -417,10 +420,11 @@ class Handler(BaseHTTPRequestHandler):
         if DEBUG:
             _debug(req_id, f"RESPONSE {raw[:2000]!r}")
 
-        # An error body under HTTP 200, or a turn carrying neither text nor tool
-        # calls, is a failure. Never hand either to the client as a valid empty turn.
-        if data.get("error"):
-            raise RuntimeError(f"upstream error: {json.dumps(data['error'])[:500]}")
+        # Anything that is not a completion -- an error body under HTTP 200, a
+        # missing `choices` -- is a failure, and so is a turn carrying neither text
+        # nor tool calls. Never hand any of them to the client as a valid empty turn.
+        if not data.get("choices"):
+            raise RuntimeError(f"upstream returned no completion: {raw[:500]!r}")
         ant = openai_to_anthropic(data, model)
         ant["content"] = [
             b for b in ant["content"]
@@ -432,7 +436,7 @@ class Handler(BaseHTTPRequestHandler):
                        f"stop_reason={ant['stop_reason']} usage={ant['usage']}")
         return ant
 
-    def _send_sse(self, ant: dict[str, Any], model: str) -> None:
+    def _send_sse(self, ant: dict[str, Any]) -> None:
         """Serialise a complete Anthropic message as the SSE event sequence."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -455,7 +459,7 @@ class Handler(BaseHTTPRequestHandler):
                     "id": ant["id"],
                     "type": "message",
                     "role": "assistant",
-                    "model": model,
+                    "model": ant["model"],
                     "content": [],
                     "stop_reason": None,
                     "stop_sequence": None,
