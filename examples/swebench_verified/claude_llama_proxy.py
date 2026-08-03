@@ -361,15 +361,28 @@ def openai_to_anthropic(data: dict[str, Any], model: str) -> dict[str, Any]:
 def prompt_completion_tokens(usage: dict[str, Any]) -> dict[str, int]:
     """Anthropic-shaped usage from an OpenAI `usage` block.
 
-    Upstream's `prompt_tokens` under-reports whenever the prompt is served from
-    cache -- a 1390-token prompt comes back as 1. `total_tokens` stays correct, so
-    the prompt side is derived from it and `prompt_tokens` is only a fallback.
+    `prompt_tokens + completion_tokens` does not always equal `total_tokens` here,
+    because the compat layer never maps the cache buckets into
+    `prompt_tokens_details`. For Claude the shortfall is on the prompt side: the
+    serializer injects cache_control automatically, and Anthropic's `input_tokens`
+    excludes both cache_read and cache_creation, so past Claude's 1024-token
+    minimum cacheable length `prompt_tokens` collapses to ~1. Measured on one
+    prompt series: 177/672 report correctly, then 1336/1996/3976-token prompts all
+    report `prompt_tokens: 1`. `total_tokens` stays correct throughout, so the
+    hidden remainder is folded back into the prompt side.
+
+    Gemini hides the opposite way -- reasoning tokens are missing from
+    `completion_tokens` (which is sometimes absent entirely), so the remainder
+    belongs to the output side there. This proxy never serves Gemini, so the
+    prompt-side attribution is the right one; do not lift this function into a
+    general-purpose client without splitting the two cases.
     """
-    completion = usage.get("completion_tokens", 0)
-    total = usage.get("total_tokens")
-    prompt = usage.get("prompt_tokens", 0)
-    if isinstance(total, int) and total >= completion:
-        prompt = max(prompt, total - completion)
+    prompt = usage.get("prompt_tokens") or 0
+    completion = usage.get("completion_tokens") or 0
+    total = usage.get("total_tokens") or 0
+    hidden = total - prompt - completion
+    if hidden > 0:
+        prompt += hidden
     return {"input_tokens": prompt, "output_tokens": completion}
 
 
