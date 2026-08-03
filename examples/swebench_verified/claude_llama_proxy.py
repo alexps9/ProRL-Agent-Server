@@ -151,6 +151,34 @@ def image_parts(content: Any) -> list[dict[str, Any]]:
     return parts
 
 
+def with_reasoning(
+    message: dict[str, Any], thinking: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Attach an Anthropic thinking block to an OpenAI assistant message.
+
+    The compat layer only forwards the signature when all three of these hold; miss
+    any one and the thinking block is dropped *silently*, so the model never sees
+    its own prior reasoning (probed with a deliberately corrupted signature: a
+    forwarded one answers "Invalid `signature` in `thinking` block", a dropped one
+    just succeeds):
+
+      - `content` is not null. An agent told not to narrate before tool calls
+        returns null content every turn, which is exactly when this matters, so a
+        single space stands in. Empty string will not do -- Anthropic rejects empty
+        text blocks.
+      - the `reasoning` key is present, even though Claude 4.8 always leaves it
+        empty and puts everything in the signature.
+      - `reasoning_signature` carries the signature verbatim.
+    """
+    if not thinking:
+        return message
+    if message.get("content") is None:
+        message["content"] = " "
+    message["reasoning"] = thinking.get("thinking") or ""
+    message["reasoning_signature"] = thinking["signature"]
+    return message
+
+
 def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
 
     messages: list[dict[str, Any]] = []
@@ -165,6 +193,7 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
         tool_calls: list[dict[str, Any]] = []
         tool_results: list[dict[str, Any]] = []
         images: list[dict[str, Any]] = list(image_parts(content))
+        thinking: dict[str, Any] | None = None
 
         if isinstance(content, list):
             for block in content:
@@ -174,6 +203,8 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
                 btype = block.get("type")
                 if btype == "text":
                     text_parts.append(block.get("text", ""))
+                elif btype == "thinking" and block.get("signature"):
+                    thinking = block
                 elif btype == "tool_use":
                     # Real OpenAI tool_calls, not prose. Flattening these into
                     # "[Called tool `x` with input: ...]" makes the model read its
@@ -224,10 +255,11 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
             })
             text = ""
 
-        if role == "assistant" and tool_calls:
-            messages.append(
-                {"role": "assistant", "content": text or None, "tool_calls": tool_calls}
-            )
+        if role == "assistant" and (tool_calls or thinking):
+            out = {"role": "assistant", "content": text or None}
+            if tool_calls:
+                out["tool_calls"] = tool_calls
+            messages.append(with_reasoning(out, thinking))
             continue
 
         if not text:
@@ -320,6 +352,14 @@ def openai_to_anthropic(data: dict[str, Any], model: str) -> dict[str, Any]:
     message = choice.get("message") or {}
 
     content: list[dict[str, Any]] = []
+    # Thinking must lead the block list per the Anthropic spec. Claude 4.8's
+    # thinking text is encrypted -- `reasoning` comes back empty and the whole
+    # thing rides in the signature -- so an empty `thinking` here is expected and
+    # must still be emitted, or the next turn has nothing to send back.
+    if message.get("reasoning_signature"):
+        content.append({"type": "thinking",
+                        "thinking": message.get("reasoning") or "",
+                        "signature": message["reasoning_signature"]})
     if message.get("content"):
         content.append({"type": "text", "text": message["content"]})
     for tc in message.get("tool_calls") or []:
@@ -593,7 +633,18 @@ class Handler(BaseHTTPRequestHandler):
         emit("ping", {"type": "ping"})
 
         for index, block in enumerate(ant["content"]):
-            if block["type"] == "text":
+            if block["type"] == "thinking":
+                emit("content_block_start", {
+                    "type": "content_block_start", "index": index,
+                    "content_block": {"type": "thinking", "thinking": "", "signature": ""}})
+                if block["thinking"]:
+                    emit("content_block_delta", {
+                        "type": "content_block_delta", "index": index,
+                        "delta": {"type": "thinking_delta", "thinking": block["thinking"]}})
+                emit("content_block_delta", {
+                    "type": "content_block_delta", "index": index,
+                    "delta": {"type": "signature_delta", "signature": block["signature"]}})
+            elif block["type"] == "text":
                 emit("content_block_start", {
                     "type": "content_block_start", "index": index,
                     "content_block": {"type": "text", "text": ""}})
