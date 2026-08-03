@@ -12,6 +12,7 @@ import os
 import sys
 import time
 import urllib.error
+import re
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,6 +30,13 @@ DEFAULT_MODEL = os.environ.get("CLAUDE_LLAMA_MODEL", "claude-4-8-opus-genai")
 FORCE_MODEL = os.environ.get("CLAUDE_LLAMA_FORCE_MODEL") or None
 DEBUG = os.environ.get("CLAUDE_LLAMA_DEBUG", "1") not in ("0", "false", "False", "")
 DEBUG_LOG_PATH = os.environ.get("CLAUDE_LLAMA_DEBUG_LOG", "/tmp/claude_llama_proxy_debug.log")
+
+# Claude Code prefixes its system prompt with a per-session billing header whose
+# version suffix changes between sessions (2.1.220.538 -> 2.1.220.c0a observed).
+# It sits at the very front of the cache prefix, so leaving it in means no session
+# ever reuses another's cached system prompt. Same regex and rationale as
+# polar/gateway/transform/anthropic.py.
+_BILLING_HEADER_RE = re.compile(r"^\s*x-anthropic-billing-header:[^\n]*\n?", re.IGNORECASE)
 
 _REQUEST_COUNTER = 0
 
@@ -190,7 +198,9 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
     messages: list[dict[str, Any]] = []
     system = body.get("system")
     if system:
-        messages.append({"role": "system", "content": content_to_text(system)})
+        system_text = _BILLING_HEADER_RE.sub("", content_to_text(system))
+        if system_text:
+            messages.append({"role": "system", "content": system_text})
 
     for msg in body.get("messages", []):
         role = msg.get("role", "user")
@@ -342,24 +352,25 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
             )
         if cleaned_tools:
             out_body["tools"] = cleaned_tools
-    if body.get("tool_choice"):
-        tc = body["tool_choice"]
-        if isinstance(tc, dict) and tc.get("type") in ("auto", "any", "none"):
-            tc = tc["type"]
-        if tc == "auto":
-            out_body["tool_choice"] = "auto"
-        elif tc == "none":
-            # Forwarded for faithfulness, but upstream ignores it: with
-            # tool_choice "none" the model still emits tool calls.
-            out_body["tool_choice"] = "none"
-        elif tc == "any":
-            out_body["tool_choice"] = "required"
-        elif isinstance(tc, dict) and tc.get("type") == "tool":
-            out_body["tool_choice"] = {
-                "type": "function",
-                "function": {"name": tc.get("name", "")},
-            }
-
+            # Only alongside a non-empty tools list: Claude Code sends tools=[]
+            # on compaction/summary turns, and a bare tool_choice is rejected
+            # ("tool_choice only allowed when tools specified").
+            tc = body.get("tool_choice")
+            if isinstance(tc, dict) and tc.get("type") in ("auto", "any", "none"):
+                tc = tc["type"]
+            if tc == "auto":
+                out_body["tool_choice"] = "auto"
+            elif tc == "none":
+                # Forwarded for faithfulness, but upstream ignores it: with
+                # tool_choice "none" the model still emits tool calls.
+                out_body["tool_choice"] = "none"
+            elif tc == "any":
+                out_body["tool_choice"] = "required"
+            elif isinstance(tc, dict) and tc.get("type") == "tool":
+                out_body["tool_choice"] = {
+                    "type": "function",
+                    "function": {"name": tc.get("name", "")},
+                }
     return out_body
 
 
@@ -400,7 +411,8 @@ def openai_to_anthropic(data: dict[str, Any], model: str) -> dict[str, Any]:
         "stop": "end_turn",
         "length": "max_tokens",
         "tool_calls": "tool_use",
-        "content_filter": "end_turn",
+        "content_filter": "refusal",
+        "stop_sequence": "stop_sequence",
     }.get(choice.get("finish_reason") or "stop", "end_turn")
 
     return {
