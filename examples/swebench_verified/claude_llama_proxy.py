@@ -42,6 +42,9 @@ def _debug(req_id: int, msg: str) -> None:
     except OSError:
         pass
 
+# Claude Code's public model ids -> MetaGen ids. The first three are the same
+# model under a different name; the rest have no equivalent here (there is no
+# Haiku tier at all) and are served by something else -- see _warn_substitution.
 MODEL_MAP = {
     "claude-opus-4-8": "claude-4-8-opus-genai",
     "claude-opus-4-6": "claude-4-6-opus-genai",
@@ -54,6 +57,15 @@ MODEL_MAP = {
     "fireworks-kimi-k3": "fireworks-kimi-k3",
 }
 
+# Entries of MODEL_MAP that serve a genuinely different model than was asked for.
+SUBSTITUTED_MODELS = {
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5",
+    "claude-3-5-haiku-latest",
+    "claude-3-5-sonnet-latest",
+    "claude-3-opus-latest",
+}
+
 
 def map_model(name: str | None) -> str:
     if FORCE_MODEL:
@@ -61,6 +73,8 @@ def map_model(name: str | None) -> str:
     if not name:
         return DEFAULT_MODEL
     if name in MODEL_MAP:
+        if name in SUBSTITUTED_MODELS:
+            _warn_substitution(name, MODEL_MAP[name])
         return MODEL_MAP[name]
     # Pass through MetaGen names / already-mapped ids
     if (
@@ -72,14 +86,31 @@ def map_model(name: str | None) -> str:
     # Fuzzy: prefer opus/sonnet/haiku buckets
     lower = name.lower()
     if "kimi" in lower:
-        return "fireworks-kimi-k3"
-    if "opus" in lower:
-        return "claude-4-8-opus-genai"
-    if "haiku" in lower:
-        return "claude-4-6-sonnet-genai"
-    if "sonnet" in lower:
-        return "claude-4-6-sonnet-genai"
-    return DEFAULT_MODEL
+        mapped = "fireworks-kimi-k3"
+    elif "opus" in lower:
+        mapped = "claude-4-8-opus-genai"
+    elif "haiku" in lower or "sonnet" in lower:
+        mapped = "claude-4-6-sonnet-genai"
+    else:
+        mapped = DEFAULT_MODEL
+    _warn_substitution(name, mapped)
+    return mapped
+
+
+_SUBSTITUTIONS_SEEN: set[str] = set()
+
+
+def _warn_substitution(requested: str, served: str) -> None:
+    """A swapped model changes cost and behaviour -- say so, once per name.
+
+    Only for genuine swaps: mapping `claude-opus-4-8` to its MetaGen id
+    `claude-4-8-opus-genai` is a rename and stays quiet. Serving Claude Code's
+    haiku-tier background calls with Sonnet, because no Haiku exists here, is not.
+    """
+    if requested == served or requested in _SUBSTITUTIONS_SEEN:
+        return
+    _SUBSTITUTIONS_SEEN.add(requested)
+    sys.stderr.write(f"[model] {requested!r} is not available here; serving {served!r}\n")
 
 
 def content_to_text(content: Any) -> str:
@@ -102,6 +133,24 @@ def content_to_text(content: Any) -> str:
     return str(content)
 
 
+def image_parts(content: Any) -> list[dict[str, Any]]:
+    """Anthropic `image` blocks -> OpenAI `image_url` parts (data URI)."""
+    if not isinstance(content, list):
+        return []
+    parts: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "image":
+            continue
+        src = block.get("source") or {}
+        if src.get("type") == "base64" and src.get("data"):
+            media = src.get("media_type", "image/png")
+            parts.append({"type": "image_url",
+                          "image_url": {"url": f"data:{media};base64,{src['data']}"}})
+        elif src.get("type") == "url" and src.get("url"):
+            parts.append({"type": "image_url", "image_url": {"url": src["url"]}})
+    return parts
+
+
 def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
 
     messages: list[dict[str, Any]] = []
@@ -115,6 +164,7 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
         text_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
         tool_results: list[dict[str, Any]] = []
+        images: list[dict[str, Any]] = list(image_parts(content))
 
         if isinstance(content, list):
             for block in content:
@@ -142,6 +192,9 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
                         }
                     )
                 elif btype == "tool_result":
+                    # OpenAI tool messages are text-only, so any image a tool
+                    # returned rides along in a follow-up user turn instead.
+                    images.extend(image_parts(block.get("content")))
                     result_text = content_to_text(block.get("content"))
                     if block.get("is_error"):
                         result_text = (
@@ -162,6 +215,14 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
         # tool_result blocks answer the preceding assistant turn, so they become
         # their own `role: tool` messages and must never be merged into a text turn.
         messages.extend(tool_results)
+
+        if images:
+            # Images never merge into a previous turn: order matters to the model.
+            messages.append({
+                "role": "user",
+                "content": ([{"type": "text", "text": text}] if text else []) + images,
+            })
+            text = ""
 
         if role == "assistant" and tool_calls:
             messages.append(
@@ -185,8 +246,9 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
         "stream": bool(body.get("stream")),
     }
     if "max_tokens" in body:
-        # Cap oversized Claude Code defaults for upstream gateways
-        out_body["max_tokens"] = min(int(body["max_tokens"]), 16384)
+        # Upstream hard limit is 128000 ("max_tokens: N > 128000"); clamping lower
+        # would silently truncate long turns.
+        out_body["max_tokens"] = min(int(body["max_tokens"]), 128000)
     # Claude 4.8+ reject an explicit `temperature` unless it is exactly the
     # default 1.0 ("deprecated for this model"). Sending the default is a no-op,
     # so drop it; anything else is a deliberate choice and stays, so that an
@@ -195,6 +257,27 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
         out_body["temperature"] = body["temperature"]
     if "stop_sequences" in body:
         out_body["stop"] = body["stop_sequences"]
+    # `top_p` is rejected outright by Claude 4.8+ ("deprecated for this model") at
+    # every value including the default, so an explicit one is forwarded and fails
+    # loudly rather than being silently dropped. `top_k` is accepted as-is.
+    if "top_p" in body:
+        out_body["top_p"] = body["top_p"]
+    if "top_k" in body:
+        out_body["top_k"] = body["top_k"]
+
+    # Extended thinking. The Anthropic `thinking` block is silently ignored by this
+    # endpoint (accepted with 200, no effect); `reasoning_effort` is what actually
+    # raises the thinking budget -- verified by completion_tokens rising 93 -> 172
+    # across the tiers on a fixed prompt.
+    effort = (body.get("output_config") or {}).get("effort")
+    thinking = body.get("thinking") or {}
+    if not effort and thinking.get("type") in ("enabled", "adaptive"):
+        budget = thinking.get("budget_tokens")
+        effort = "high" if budget is None else (
+            "low" if budget <= 2048 else "medium" if budget <= 8192 else "high"
+        )
+    if effort:
+        out_body["reasoning_effort"] = effort
 
     tools = body.get("tools")
     if tools:
@@ -263,7 +346,6 @@ def openai_to_anthropic(data: dict[str, Any], model: str) -> dict[str, Any]:
         "content_filter": "end_turn",
     }.get(choice.get("finish_reason") or "stop", "end_turn")
 
-    usage = data.get("usage") or {}
     return {
         "id": data.get("id") or f"msg_{uuid.uuid4().hex}",
         "type": "message",
@@ -272,11 +354,23 @@ def openai_to_anthropic(data: dict[str, Any], model: str) -> dict[str, Any]:
         "content": content,
         "stop_reason": stop_reason,
         "stop_sequence": None,
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens", 0),
-            "output_tokens": usage.get("completion_tokens", 0),
-        },
+        "usage": prompt_completion_tokens(data.get("usage") or {}),
     }
+
+
+def prompt_completion_tokens(usage: dict[str, Any]) -> dict[str, int]:
+    """Anthropic-shaped usage from an OpenAI `usage` block.
+
+    Upstream's `prompt_tokens` under-reports whenever the prompt is served from
+    cache -- a 1390-token prompt comes back as 1. `total_tokens` stays correct, so
+    the prompt side is derived from it and `prompt_tokens` is only a fallback.
+    """
+    completion = usage.get("completion_tokens", 0)
+    total = usage.get("total_tokens")
+    prompt = usage.get("prompt_tokens", 0)
+    if isinstance(total, int) and total >= completion:
+        prompt = max(prompt, total - completion)
+    return {"input_tokens": prompt, "output_tokens": completion}
 
 
 def upstream_request(path: str, payload: dict[str, Any] | None, stream: bool = False):
@@ -358,9 +452,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path.endswith("/messages/count_tokens"):
-            text = json.dumps(body)
-            est = max(1, len(text) // 4)
-            self._send(200, json.dumps({"input_tokens": est}).encode())
+            self._send(200, json.dumps({"input_tokens": self._count_tokens(body)}).encode())
             return
 
         if not path.endswith("/messages"):
@@ -397,6 +489,23 @@ class Handler(BaseHTTPRequestHandler):
             sys.stderr.write(f"proxy error: {e}\n")
             _debug(req_id, f"EXCEPTION {type(e).__name__}: {e}")
             self._send(500, json.dumps({"error": {"type": "proxy_error", "message": str(e)}}).encode())
+
+    def _count_tokens(self, body: dict[str, Any]) -> int:
+        """Exact prompt token count for Anthropic's /messages/count_tokens.
+
+        The OpenAI-compat upstream has no token-counting endpoint, so the count is
+        taken from the only authority there is: a 1-token completion of the same
+        prompt, reading `total_tokens - completion_tokens`. Claude Code drives
+        compaction off this number, and a guess (the old `len(json)//4`) was off by
+        +26% to +88% on ordinary payloads.
+        """
+        oai = anthropic_to_openai(body)
+        oai["stream"] = False
+        oai["max_tokens"] = 1
+        oai.pop("tool_choice", None)
+        with upstream_request("/chat/completions", oai, stream=False) as resp:
+            usage = json.loads(resp.read().decode()).get("usage") or {}
+        return prompt_completion_tokens(usage)["input_tokens"]
 
     def _complete(self, oai: dict[str, Any], model: str, req_id: int) -> dict[str, Any]:
         """One upstream turn -> one Anthropic Messages response. Always non-streaming.
