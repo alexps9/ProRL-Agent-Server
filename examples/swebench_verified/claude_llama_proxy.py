@@ -323,7 +323,11 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
                     "type": "function",
                     "function": {
                         "name": t.get("name", ""),
-                        "description": (t.get("description") or "")[:8000],
+                        # Not truncated: Claude Code ships multi-KB tool
+                        # descriptions and upstream accepts them (150k chars
+                        # verified), so cutting them would hand the model an
+                        # incomplete spec of its own tools.
+                        "description": t.get("description") or "",
                         "parameters": schema,
                     },
                 }
@@ -332,8 +336,14 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
             out_body["tools"] = cleaned_tools
     if body.get("tool_choice"):
         tc = body["tool_choice"]
+        if isinstance(tc, dict) and tc.get("type") in ("auto", "any", "none"):
+            tc = tc["type"]
         if tc == "auto":
             out_body["tool_choice"] = "auto"
+        elif tc == "none":
+            # Forwarded for faithfulness, but upstream ignores it: with
+            # tool_choice "none" the model still emits tool calls.
+            out_body["tool_choice"] = "none"
         elif tc == "any":
             out_body["tool_choice"] = "required"
         elif isinstance(tc, dict) and tc.get("type") == "tool":
