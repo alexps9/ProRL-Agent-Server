@@ -538,6 +538,17 @@ class Handler(BaseHTTPRequestHandler):
         stream = bool(oai.get("stream"))
         sys.stderr.write(f"→ upstream model={model} stream={stream} tools={len(oai.get('tools') or [])}\n")
         if DEBUG:
+            # What the client actually asked for, minus payload bulk and the
+            # device/session ids in `metadata`. Claude Code 2.1.220 sends:
+            # thinking{type:adaptive,display:omitted}, output_config{effort},
+            # context_management{edits:[clear_thinking]}, max_tokens 64000 -- and
+            # never stop_sequences, tool_choice, temperature, top_p or top_k.
+            _debug(req_id, "CLIENT FIELDS " + json.dumps(
+                {k: (v if k in ("model", "max_tokens", "temperature", "top_p", "top_k",
+                                "stop_sequences", "thinking", "tool_choice", "stream",
+                                "service_tier", "output_config", "context_management")
+                     else f"<{type(v).__name__}:{len(v) if hasattr(v, '__len__') else ''}>")
+                 for k, v in body.items()}, ensure_ascii=False)[:1500])
             msgs = oai.get("messages", [])
             roles = [m.get("role") for m in msgs]
             tail = [m for m in msgs if m.get("role") in ("assistant", "tool")][-2:]
