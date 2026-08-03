@@ -13,6 +13,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -113,6 +114,9 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
         role = msg.get("role", "user")
         content = msg.get("content")
         text_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+        tool_results: list[dict[str, Any]] = []
+
         if isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict):
@@ -122,21 +126,57 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
                 if btype == "text":
                     text_parts.append(block.get("text", ""))
                 elif btype == "tool_use":
-                    text_parts.append(
-                        f"[Called tool `{block.get('name', '')}` with input: "
-                        f"{json.dumps(block.get('input', {}), ensure_ascii=False)}]"
+                    # Real OpenAI tool_calls, not prose. Flattening these into
+                    # "[Called tool `x` with input: ...]" makes the model read its
+                    # own tool protocol as narration and, a few turns in, start
+                    # *writing* calls as text instead of emitting them.
+                    tool_calls.append(
+                        {
+                            "id": block.get("id") or f"call_{uuid.uuid4().hex[:24]}",
+                            "type": "function",
+                            "function": {
+                                "name": block.get("name", ""),
+                                "arguments": json.dumps(
+                                    block.get("input") or {}, ensure_ascii=False
+                                ),
+                            },
+                        }
                     )
                 elif btype == "tool_result":
-                    label = "Tool error" if block.get("is_error") else "Tool result"
-                    text_parts.append(f"[{label}]: {content_to_text(block.get('content'))}")
+                    result_text = content_to_text(block.get("content"))
+                    if block.get("is_error"):
+                        result_text = (
+                            f"[Tool error] {result_text}" if result_text else "[Tool error]"
+                        )
+                    tool_results.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": block.get("tool_use_id", ""),
+                            "content": result_text,
+                        }
+                    )
         else:
             text_parts.append(content_to_text(content))
 
         text = "\n".join(p for p in text_parts if p)
+
+        # tool_result blocks answer the preceding assistant turn, so they become
+        # their own `role: tool` messages and must never be merged into a text turn.
+        messages.extend(tool_results)
+
+        if role == "assistant" and tool_calls:
+            messages.append(
+                {"role": "assistant", "content": text or None, "tool_calls": tool_calls}
+            )
+            continue
+
+        if not text:
+            continue
+
         norm_role = "assistant" if role == "assistant" else "user"
-        if messages and messages[-1]["role"] == norm_role:
-            if text:
-                messages[-1]["content"] = f"{messages[-1]['content']}\n\n{text}"
+        prev = messages[-1] if messages else None
+        if prev and prev.get("role") == norm_role and not prev.get("tool_calls"):
+            prev["content"] = f"{prev.get('content') or ''}\n\n{text}".strip()
         else:
             messages.append({"role": norm_role, "content": text})
 
@@ -188,78 +228,41 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
     return out_body
 
 
-def split_tool_call_args(
-    name: str, tool_id: str | None, args_text: str
-) -> list[dict[str, Any]]:
-
-    text = (args_text or "").strip()
-    if not text:
-        return [{"id": tool_id, "name": name, "input": {}}]
-
-    decoder = json.JSONDecoder()
-    results: list[dict[str, Any]] = []
-    idx = 0
-    first = True
-    while idx < len(text):
-        while idx < len(text) and text[idx] in " \t\r\n":
-            idx += 1
-        if idx >= len(text):
-            break
-        try:
-            obj, end = decoder.raw_decode(text, idx)
-        except json.JSONDecodeError:
-            break
-        if first:
-            results.append({"id": tool_id, "name": name, "input": obj if isinstance(obj, dict) else {}})
-            first = False
-        elif isinstance(obj, dict) and obj.get("type") == "tool_use":
-            results.append(
-                {
-                    "id": obj.get("id") or tool_id,
-                    "name": obj.get("name") or name,
-                    "input": obj.get("input") if isinstance(obj.get("input"), dict) else {},
-                }
-            )
-        idx = end
-    if not results:
-        results.append({"id": tool_id, "name": name, "input": {}})
-    return results
-
-
 def openai_to_anthropic(data: dict[str, Any], model: str) -> dict[str, Any]:
+    """OpenAI chat completion -> Anthropic Messages response."""
     choice = (data.get("choices") or [{}])[0]
     message = choice.get("message") or {}
-    text = message.get("content") or ""
-    content: list[dict[str, Any]] = []
-    if text:
-        content.append({"type": "text", "text": text})
-    for i, tc in enumerate(message.get("tool_calls") or []):
-        fn = tc.get("function") or {}
-        for j, call in enumerate(
-            split_tool_call_args(fn.get("name", ""), tc.get("id"), fn.get("arguments") or "{}")
-        ):
-            content.append(
-                {
-                    "type": "tool_use",
-                    "id": call["id"] or f"toolu_{i}_{j}",
-                    "name": call["name"],
-                    "input": call["input"],
-                }
-            )
-    if not content:
-        content = [{"type": "text", "text": ""}]
 
-    finish = choice.get("finish_reason") or "stop"
+    content: list[dict[str, Any]] = []
+    if message.get("content"):
+        content.append({"type": "text", "text": message["content"]})
+    for tc in message.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        content.append(
+            {
+                "type": "tool_use",
+                # Claude Code echoes this back as tool_use_id, so it has to be
+                # globally unique -- a per-response counter collides across turns.
+                "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:24]}",
+                "name": fn.get("name", ""),
+                "input": args if isinstance(args, dict) else {},
+            }
+        )
+
     stop_reason = {
         "stop": "end_turn",
         "length": "max_tokens",
         "tool_calls": "tool_use",
         "content_filter": "end_turn",
-    }.get(finish, "end_turn")
+    }.get(choice.get("finish_reason") or "stop", "end_turn")
 
     usage = data.get("usage") or {}
     return {
-        "id": data.get("id", "msg_proxy"),
+        "id": data.get("id") or f"msg_{uuid.uuid4().hex}",
         "type": "message",
         "role": "assistant",
         "model": model,
@@ -377,15 +380,10 @@ class Handler(BaseHTTPRequestHandler):
             _debug(req_id, f"REQUEST roles={roles} tail_messages={tail_json[:3000]}")
 
         try:
+            ant = self._complete(oai, model, req_id)
             if stream:
-                self._proxy_stream(oai, model, req_id)
+                self._send_sse(ant, model)
             else:
-                with upstream_request("/chat/completions", oai, stream=False) as resp:
-                    raw = resp.read()
-                data = json.loads(raw.decode())
-                if DEBUG:
-                    _debug(req_id, f"RESPONSE (non-stream) {raw[:2000]!r}")
-                ant = openai_to_anthropic(data, model)
                 self._send(200, json.dumps(ant).encode())
         except urllib.error.HTTPError as e:
             err = e.read()
@@ -397,11 +395,45 @@ class Handler(BaseHTTPRequestHandler):
             _debug(req_id, f"EXCEPTION {type(e).__name__}: {e}")
             self._send(500, json.dumps({"error": {"type": "proxy_error", "message": str(e)}}).encode())
 
-    def _proxy_stream(self, oai: dict[str, Any], model: str, req_id: int = 0) -> None:
-        # Connect first so failures can still return JSON errors
-        resp = upstream_request("/chat/completions", oai, stream=True)
+    def _complete(self, oai: dict[str, Any], model: str, req_id: int) -> dict[str, Any]:
+        """One upstream turn -> one Anthropic Messages response. Always non-streaming.
 
-        msg_id = "msg_proxy_stream"
+        The compat endpoint's *streaming* path drops the assistant `tool_calls`
+        message as soon as the history contains a `role: tool` turn, and reports the
+        failure as an un-framed JSON error inside an HTTP 200 SSE body -- which every
+        conformant SSE parser silently discards, turning a hard failure into "the
+        model said nothing". Its non-streaming path converts correctly, so we always
+        fetch whole turns and, for streaming clients, synthesise the event stream.
+
+        Cost is token-level TTFT only; total turn latency is unchanged (measured
+        ~18s either way on a 600-word generation). For an agent loop that is free:
+        a tool call is only actionable once its arguments JSON is complete.
+        """
+        payload = dict(oai)
+        payload["stream"] = False
+        with upstream_request("/chat/completions", payload, stream=False) as resp:
+            raw = resp.read()
+        data = json.loads(raw.decode())
+        if DEBUG:
+            _debug(req_id, f"RESPONSE {raw[:2000]!r}")
+
+        # An error body under HTTP 200, or a turn carrying neither text nor tool
+        # calls, is a failure. Never hand either to the client as a valid empty turn.
+        if data.get("error"):
+            raise RuntimeError(f"upstream error: {json.dumps(data['error'])[:500]}")
+        ant = openai_to_anthropic(data, model)
+        ant["content"] = [
+            b for b in ant["content"]
+            if b["type"] != "text" or (b.get("text") or "").strip()
+        ]
+        if not ant["content"]:
+            raise RuntimeError(f"upstream returned an empty completion: {raw[:500]!r}")
+        _debug(req_id, f"OK blocks={[b['type'] for b in ant['content']]} "
+                       f"stop_reason={ant['stop_reason']} usage={ant['usage']}")
+        return ant
+
+    def _send_sse(self, ant: dict[str, Any], model: str) -> None:
+        """Serialise a complete Anthropic message as the SSE event sequence."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -414,203 +446,49 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(chunk)
             self.wfile.flush()
 
+        usage = ant.get("usage") or {}
         emit(
             "message_start",
             {
                 "type": "message_start",
                 "message": {
-                    "id": msg_id,
+                    "id": ant["id"],
                     "type": "message",
                     "role": "assistant",
                     "model": model,
                     "content": [],
                     "stop_reason": None,
                     "stop_sequence": None,
-                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                    "usage": {"input_tokens": usage.get("input_tokens", 0),
+                              "output_tokens": 0},
                 },
             },
         )
         emit("ping", {"type": "ping"})
 
-        stop_reason = "end_turn"
-        output_tokens = 0
-        next_index = 0
-        text_index: int | None = None
-        # OpenAI tool-call index -> raw accumulated {id, name, args}. We buffer
-        # the whole thing (instead of streaming input_json_delta live) because
-        # the upstream sometimes concatenates a second tool call's raw JSON
-        # onto this one's arguments string; see split_tool_call_args().
-        tool_raw: dict[int, dict[str, Any]] = {}
-        raw_lines_seen = 0
-        data_lines_seen = 0
-        error_chunk: dict[str, Any] | None = None
+        for index, block in enumerate(ant["content"]):
+            if block["type"] == "text":
+                emit("content_block_start", {
+                    "type": "content_block_start", "index": index,
+                    "content_block": {"type": "text", "text": ""}})
+                emit("content_block_delta", {
+                    "type": "content_block_delta", "index": index,
+                    "delta": {"type": "text_delta", "text": block["text"]}})
+            else:
+                emit("content_block_start", {
+                    "type": "content_block_start", "index": index,
+                    "content_block": {"type": "tool_use", "id": block["id"],
+                                      "name": block["name"], "input": {}}})
+                emit("content_block_delta", {
+                    "type": "content_block_delta", "index": index,
+                    "delta": {"type": "input_json_delta",
+                              "partial_json": json.dumps(block["input"], ensure_ascii=False)}})
+            emit("content_block_stop", {"type": "content_block_stop", "index": index})
 
-        try:
-            while True:
-                raw = resp.readline()
-                if not raw:
-                    break
-                raw_lines_seen += 1
-                line = raw.decode("utf-8", errors="replace").strip()
-                if DEBUG and line:
-                    _debug(req_id, f"SSE line: {line[:1000]}")
-                if not line or not line.startswith("data:"):
-                    continue
-                data_str = line[5:].strip()
-                if data_str == "[DONE]":
-                    break
-                data_lines_seen += 1
-                try:
-                    chunk = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-
-                if chunk.get("error"):
-                    error_chunk = chunk
-                    _debug(req_id, f"upstream error chunk: {chunk}")
-
-                choice = (chunk.get("choices") or [{}])[0]
-                delta = choice.get("delta") or {}
-                text = delta.get("content") or ""
-                if text:
-                    if text_index is None:
-                        text_index = next_index
-                        next_index += 1
-                        emit(
-                            "content_block_start",
-                            {
-                                "type": "content_block_start",
-                                "index": text_index,
-                                "content_block": {"type": "text", "text": ""},
-                            },
-                        )
-                    emit(
-                        "content_block_delta",
-                        {
-                            "type": "content_block_delta",
-                            "index": text_index,
-                            "delta": {"type": "text_delta", "text": text},
-                        },
-                    )
-
-                for tc in delta.get("tool_calls") or []:
-                    oi = int(tc.get("index", 0))
-                    fn = tc.get("function") or {}
-                    if oi not in tool_raw:
-                        tool_raw[oi] = {"id": None, "name": "", "args": ""}
-                    raw = tool_raw[oi]
-                    if tc.get("id"):
-                        raw["id"] = tc["id"]
-                    if fn.get("name"):
-                        raw["name"] += fn["name"]
-                    if fn.get("arguments"):
-                        raw["args"] += fn["arguments"]
-
-                fr = choice.get("finish_reason")
-                if fr:
-                    stop_reason = {
-                        "stop": "end_turn",
-                        "length": "max_tokens",
-                        "tool_calls": "tool_use",
-                    }.get(fr, "end_turn")
-                usage = chunk.get("usage") or {}
-                if usage.get("completion_tokens"):
-                    output_tokens = usage["completion_tokens"]
-        finally:
-            resp.close()
-
-        if text_index is not None:
-            emit("content_block_stop", {"type": "content_block_stop", "index": text_index})
-
-        any_tool_emitted = False
-        for oi in sorted(tool_raw):
-            raw = tool_raw[oi]
-            if not raw["name"] and not raw["args"]:
-                continue
-            calls = split_tool_call_args(raw["name"], raw["id"], raw["args"])
-            if len(calls) > 1:
-                _debug(
-                    req_id,
-                    f"split {len(calls)} tool calls out of oi={oi} name={raw['name']!r} "
-                    f"(upstream glued extra tool_use JSON onto arguments)",
-                )
-            for call in calls:
-                block_index = next_index
-                next_index += 1
-                any_tool_emitted = True
-                tool_id = call["id"] or f"toolu_{oi}_{block_index}"
-                emit(
-                    "content_block_start",
-                    {
-                        "type": "content_block_start",
-                        "index": block_index,
-                        "content_block": {
-                            "type": "tool_use",
-                            "id": tool_id,
-                            "name": call["name"],
-                            "input": {},
-                        },
-                    },
-                )
-                emit(
-                    "content_block_delta",
-                    {
-                        "type": "content_block_delta",
-                        "index": block_index,
-                        "delta": {
-                            "type": "input_json_delta",
-                            "partial_json": json.dumps(call["input"]),
-                        },
-                    },
-                )
-                emit("content_block_stop", {"type": "content_block_stop", "index": block_index})
-
-        # If model returned nothing, emit empty text so clients still get a block
-        if text_index is None and not any_tool_emitted:
-            empty_text = ""
-            if error_chunk is not None:
-                empty_text = f"[proxy: upstream error {json.dumps(error_chunk)[:500]}]"
-            elif data_lines_seen == 0:
-                empty_text = "[proxy: upstream stream closed with no data lines]"
-            _debug(
-                req_id,
-                "EMPTY completion: "
-                f"raw_lines={raw_lines_seen} data_lines={data_lines_seen} "
-                f"error_chunk={error_chunk} stop_reason={stop_reason}",
-            )
-            emit(
-                "content_block_start",
-                {
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {"type": "text", "text": ""},
-                },
-            )
-            if empty_text:
-                emit(
-                    "content_block_delta",
-                    {
-                        "type": "content_block_delta",
-                        "index": 0,
-                        "delta": {"type": "text_delta", "text": empty_text},
-                    },
-                )
-            emit("content_block_stop", {"type": "content_block_stop", "index": 0})
-        else:
-            _debug(
-                req_id,
-                f"OK completion: text={text_index is not None} tools={len(tool_raw)} "
-                f"stop_reason={stop_reason} data_lines={data_lines_seen}",
-            )
-
-        emit(
-            "message_delta",
-            {
-                "type": "message_delta",
-                "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-                "usage": {"output_tokens": output_tokens},
-            },
-        )
+        emit("message_delta", {
+            "type": "message_delta",
+            "delta": {"stop_reason": ant["stop_reason"], "stop_sequence": None},
+            "usage": {"output_tokens": usage.get("output_tokens", 0)}})
         emit("message_stop", {"type": "message_stop"})
 
 
