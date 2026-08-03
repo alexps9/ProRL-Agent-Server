@@ -156,11 +156,14 @@ def with_reasoning(
 ) -> dict[str, Any]:
     """Attach an Anthropic thinking block to an OpenAI assistant message.
 
-    The compat layer only forwards the signature when all three of these hold; miss
-    any one and the thinking block is dropped *silently*, so the model never sees
-    its own prior reasoning (probed with a deliberately corrupted signature: a
-    forwarded one answers "Invalid `signature` in `thinking` block", a dropped one
-    just succeeds):
+    Two shapes reach here. The open reasoning models (kimi-k3, glm-5.2,
+    deepseek-v4-pro) return plain CoT text in `reasoning` and need nothing else.
+    Claude returns the reverse -- `reasoning` is always empty and the whole thing
+    is encrypted into a signature -- and the compat layer only forwards that
+    signature when all three of these hold; miss any one and the thinking block is
+    dropped *silently*, so the model never sees its own prior reasoning (probed
+    with a deliberately corrupted signature: a forwarded one answers "Invalid
+    `signature` in `thinking` block", a dropped one just succeeds):
 
       - `content` is not null. An agent told not to narrate before tool calls
         returns null content every turn, which is exactly when this matters, so a
@@ -172,10 +175,13 @@ def with_reasoning(
     """
     if not thinking:
         return message
-    if message.get("content") is None:
-        message["content"] = " "
     message["reasoning"] = thinking.get("thinking") or ""
-    message["reasoning_signature"] = thinking["signature"]
+    if thinking.get("signature"):
+        # Only Claude carries a signature, and only then does the null-content
+        # rule below apply; the open reasoning models send plain CoT text.
+        message["reasoning_signature"] = thinking["signature"]
+        if message.get("content") is None:
+            message["content"] = " "
     return message
 
 
@@ -203,7 +209,9 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
                 btype = block.get("type")
                 if btype == "text":
                     text_parts.append(block.get("text", ""))
-                elif btype == "thinking" and block.get("signature"):
+                elif btype == "thinking" and (
+                    block.get("signature") or block.get("thinking")
+                ):
                     thinking = block
                 elif btype == "tool_use":
                     # Real OpenAI tool_calls, not prose. Flattening these into
@@ -365,10 +373,10 @@ def openai_to_anthropic(data: dict[str, Any], model: str) -> dict[str, Any]:
     # thinking text is encrypted -- `reasoning` comes back empty and the whole
     # thing rides in the signature -- so an empty `thinking` here is expected and
     # must still be emitted, or the next turn has nothing to send back.
-    if message.get("reasoning_signature"):
-        content.append({"type": "thinking",
-                        "thinking": message.get("reasoning") or "",
-                        "signature": message["reasoning_signature"]})
+    reasoning = message.get("reasoning") or message.get("reasoning_content") or ""
+    signature = message.get("reasoning_signature") or ""
+    if reasoning or signature:
+        content.append({"type": "thinking", "thinking": reasoning, "signature": signature})
     if message.get("content"):
         content.append({"type": "text", "text": message["content"]})
     for tc in message.get("tool_calls") or []:
