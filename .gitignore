@@ -126,3 +126,4 @@ web/dist/
 examples/swebench_verified/agentreplay_classified/
 examples/swebench_verified/agentreplay_converted/
 examples/swebench_verified/agentreplay_export/
+examples/swebench_verified/higress_ab/.env
