@@ -35,7 +35,7 @@ POLL_INTERVAL_SECONDS = 15.0
 
 # Pinned versions keep the quickstart stable. Bump intentionally.
 HARNESS_NPM_PACKAGE: dict[str, str] = {
-    "codex": "@openai/codex@0.121.0",
+    "codex": "@openai/codex@0.145.0",
     "opencode": "opencode-ai@1.4.6",
     "claude_code": "@anthropic-ai/claude-code@2.1.111",
     "qwen_code": "@qwen-code/qwen-code@0.14.5",

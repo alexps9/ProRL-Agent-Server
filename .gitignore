@@ -100,7 +100,7 @@ wandb/
 checkpoints/
 models/
 experiments/
-rollout_results/
+rollout_results*/
 outputs/
 local/
 logs/
@@ -125,5 +125,5 @@ web/dist/
 # Large local SWE-bench / agentreplay artifacts
 examples/swebench_verified/agentreplay_classified/
 examples/swebench_verified/agentreplay_converted/
-examples/swebench_verified/agentreplay_export/
+examples/swebench_verified/agentreplay_export*/
 examples/swebench_verified/higress_ab/.env

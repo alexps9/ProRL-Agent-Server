@@ -996,17 +996,23 @@ class GatewayNodeManager:
         managed: ManagedSession,
         result: SessionResult | None,
     ) -> None:
-        """Copy staged claude_projects into save_dir before session_dir teardown.
+        """Copy staged harness artifacts into save_dir before session_dir teardown.
+
+        Harness-agnostic: copies every subdirectory a harness's postprocess()
+        staged under RUNTIME_ARTIFACTS_DIR (e.g. claude_projects for
+        ClaudeCodeHarness, codex_sessions for CodexHarness), by name, as-is.
+        No per-harness format conversion here -- that's agentreplay's job.
 
         Layout::
 
-            {save_dir}/task_{task_id}/ses_{session_id}/claude_projects/<slug>/...
+            {save_dir}/task_{task_id}/ses_{session_id}/<artifact_dir>/...
             {save_dir}/task_{task_id}/ses_{session_id}/meta.json
         """
         if self._save_dir is None:
             return
-        src = managed.session_dir / "artifacts" / "claude_projects"
-        if not src.is_dir():
+        artifacts_root = managed.session_dir / "artifacts"
+        staged = [p for p in artifacts_root.glob("*") if p.is_dir()] if artifacts_root.is_dir() else []
+        if not staged:
             return
         request = managed.request
         dest_root = (
@@ -1014,13 +1020,14 @@ class GatewayNodeManager:
             / f"task_{request.task_id}"
             / f"ses_{request.session_id}"
         )
-        dest_projects = dest_root / "claude_projects"
 
         def _copy() -> None:
             dest_root.mkdir(parents=True, exist_ok=True)
-            if dest_projects.exists():
-                shutil.rmtree(dest_projects)
-            shutil.copytree(src, dest_projects)
+            for src in staged:
+                dest = dest_root / src.name
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.copytree(src, dest)
             meta = {
                 "task_id": request.task_id,
                 "session_id": request.session_id,

@@ -27,7 +27,12 @@ Issues = "https://github.com/NVIDIA-NeMo/ProRL-Agent-Server/issues"
 
 [project.optional-dependencies]
 swebench = [
-    "swebench",
+    # 5.0+ restructured swebench.harness.test_spec (make_test_spec moved to
+    # swebench.harness.utils, TestSpec to swebench.types) in a way
+    # polar/trajectory/evaluator/swebench_harness.py's import fallback chain
+    # doesn't handle, so evaluation 500s with "No module named
+    # 'swebench.harness.test_spec'". Pin below that break.
+    "swebench<5",
     "datasets",
 ]
 

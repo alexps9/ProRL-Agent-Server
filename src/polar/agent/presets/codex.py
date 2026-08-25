@@ -6,10 +6,15 @@ import shlex
 
 from polar.agent.base import BaseHarness
 from polar.agent.models import AgentSpec
-from polar.runtime.base import BaseRuntime, RUNTIME_AGENT_LOG_DIR, RUNTIME_SESSION_DIR
+from polar.runtime.base import (
+    BaseRuntime,
+    RUNTIME_AGENT_LOG_DIR,
+    RUNTIME_ARTIFACTS_DIR,
+    RUNTIME_SESSION_DIR,
+)
 from polar.runtime.models import ExecInput
 
-DEFAULT_CODEX_VERSION = "0.125.0"
+DEFAULT_CODEX_VERSION = "0.145.0"
 DEFAULT_REASONING_EFFORT = "xhigh"
 DEFAULT_MODEL_NAME = "gpt-5.5"
 
@@ -23,6 +28,7 @@ class CodexHarness(BaseHarness):
         # rotation or archival can't clobber them. Absolute path — $HOME won't
         # expand in docker exec -e.
         self._codex_home = f"{RUNTIME_SESSION_DIR}/.codex"
+        self._export_agentreplay = bool(self.settings.get("export_agentreplay", True))
 
     async def setup(self, runtime: BaseRuntime) -> None:
         await runtime.exec(f"mkdir -p {self._codex_home}")
@@ -145,6 +151,26 @@ class CodexHarness(BaseHarness):
                 env={"CODEX_HOME": self._codex_home},
             )
         ]
+
+    async def postprocess(self, runtime: BaseRuntime, result) -> None:
+        """Stage Codex native session transcripts for agentreplay before teardown.
+
+        Mirrors ClaudeCodeHarness.postprocess: RUNTIME_ARTIFACTS_DIR is
+        bind-mounted, so anything copied here is what the gateway persists to
+        save_dir before the runtime's session_dir is wiped. postrun_steps()
+        above only stages into RUNTIME_AGENT_LOG_DIR, which is not
+        bind-mounted and never leaves the container.
+        """
+        if not self._export_agentreplay:
+            return
+        dest = f"{RUNTIME_ARTIFACTS_DIR}/codex_sessions"
+        sessions = f"{self._codex_home}/sessions"
+        await runtime.exec(
+            f"mkdir -p {shlex.quote(dest)} && "
+            f"if [ -d {shlex.quote(sessions)} ]; then "
+            f"  cp -a {shlex.quote(sessions)}/. {shlex.quote(dest)}/; "
+            f"fi"
+        )
 
     def _expected_version(self) -> str | None:
         value = self.settings.get("version", DEFAULT_CODEX_VERSION)
