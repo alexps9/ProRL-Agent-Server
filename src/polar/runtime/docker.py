@@ -61,6 +61,12 @@ class DockerRuntime(BaseRuntime):
         # Additional volumes from kwargs (e.g., Docker socket for agents that need DinD)
         for vol in self.spec.kwargs.get("volumes", []):
             create_args.extend(["-v", vol])
+        # Extra /etc/hosts entries (e.g. "github.com:127.0.0.1" to null-route a
+        # domain). Applied by Docker at container creation, before any process
+        # runs -- unlike editing /etc/hosts from inside the container, this
+        # doesn't need root/sudo in the image.
+        for host_entry in self.spec.kwargs.get("extra_hosts", []):
+            create_args.extend(["--add-host", host_entry])
         create_args.extend([self.spec.image, "sleep", "infinity"])
         rc, _, stderr = await self._run_local_command(
             *create_args, capture=True, timeout=self._START_TIMEOUT,

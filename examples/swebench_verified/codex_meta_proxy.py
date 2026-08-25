@@ -83,6 +83,34 @@ def map_model(name: str | None) -> str:
     return mapped
 
 
+def inline_additional_tools(body: dict[str, Any]) -> None:
+    """Fold `input` items of type "additional_tools" into the top-level `tools` array.
+
+    Newer Codex (observed with unified_exec / the JS "exec" orchestration
+    tool) declares its tool set via an `input[0]` item shaped like
+    `{"type": "additional_tools", "role": "developer", "tools": [...]}`
+    instead of the top-level `tools` field. The Model API doesn't recognize
+    that item type at all and 400s with "`input[0]` did not match any
+    supported type" before ever looking at the tools inside it. Extract and
+    merge them into `tools` (the shape is identical to a normal tool entry),
+    then drop the item so the rest of the request looks like the old-style
+    request the Model API does understand.
+    """
+    input_items = body.get("input")
+    if not isinstance(input_items, list):
+        return
+    kept: list[Any] = []
+    extra_tools: list[Any] = []
+    for item in input_items:
+        if isinstance(item, dict) and item.get("type") == "additional_tools":
+            extra_tools.extend(item.get("tools") or [])
+        else:
+            kept.append(item)
+    if extra_tools:
+        body["input"] = kept
+        body["tools"] = [*(body.get("tools") or []), *extra_tools]
+
+
 def _strictify_schema(schema: Any) -> None:
     """Fill in `required` with every `properties` key, recursively.
 
@@ -183,6 +211,7 @@ class Handler(BaseHTTPRequestHandler):
 
         requested_model = body.get("model")
         body["model"] = map_model(requested_model)
+        inline_additional_tools(body)
         if body.get("tools"):
             body["tools"] = drop_unsupported_tools(body["tools"])
         strictify_tools(body.get("tools") or [])
@@ -212,6 +241,7 @@ class Handler(BaseHTTPRequestHandler):
             err = e.read()
             sys.stderr.write(f"upstream HTTP {e.code}: {err[:500]!r}\n")
             _debug(req_id, f"HTTPError {e.code}: {err[:2000]!r}")
+            _debug(req_id, "FULL REQUEST ON ERROR " + json.dumps(body, ensure_ascii=False)[:6000])
             self._send(e.code, err or json.dumps({"error": str(e)}).encode())
         except Exception as e:  # noqa: BLE001
             sys.stderr.write(f"proxy error: {e}\n")

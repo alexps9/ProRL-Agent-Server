@@ -53,6 +53,25 @@ _PREPARE_BASE = (
 )
 
 
+# Null-routing these (not full docker-network isolation) blocks the agent
+# from looking up a task's real upstream fix on GitHub without touching
+# general internet access -- npm install, pip, etc. still work normally
+# during INIT. Covers github.com's web/API/raw-content/archive hosts.
+# Applied via `docker create --add-host` (see runtime.kwargs.extra_hosts
+# below), not by editing /etc/hosts from inside the container -- the base
+# image has no sudo, and /etc/hosts is root-owned/not writable by the
+# container's default user.
+DEFAULT_BLOCKED_DOMAINS = [
+    "github.com",
+    "api.github.com",
+    "raw.githubusercontent.com",
+    "codeload.github.com",
+    "objects.githubusercontent.com",
+    "gist.github.com",
+    "gist.githubusercontent.com",
+]
+
+
 def prepare_command_for_harness(harness: str) -> str:
     return f"npm install -g {HARNESS_NPM_PACKAGE[harness]} && {_PREPARE_BASE}"
 
@@ -78,6 +97,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--instance-id", action="append", default=[])
     parser.add_argument("--timeout-seconds", type=float, default=3600.0)
     parser.add_argument("--runtime-backend", choices=["docker", "apptainer"], default="docker")
+    parser.add_argument(
+        "--block-github-lookups",
+        action="store_true",
+        help="Null-route github.com/api.github.com/raw.githubusercontent.com/etc "
+        "in the container's /etc/hosts during INIT, so the agent can't look up a "
+        "task's real upstream fix on GitHub. General internet (npm, pip, ...) is "
+        "unaffected -- this is not full network isolation.",
+    )
     parser.add_argument(
         "--model-name",
         default="gpt-5.4",
@@ -296,6 +323,11 @@ def build_task_request(args: argparse.Namespace, instance: dict[str, Any], batch
             "env": runtime_env_for_harness(args.harness),
             "network": "host",
             "workdir": "/polar/session/workspace",
+            "kwargs": (
+                {"extra_hosts": [f"{d}:127.0.0.1" for d in DEFAULT_BLOCKED_DOMAINS]}
+                if args.block_github_lookups
+                else {}
+            ),
         },
         "agent": agent_spec_for(args),
         "builder": {"strategy": "prefix_merging"},
