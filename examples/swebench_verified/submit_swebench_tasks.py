@@ -14,6 +14,7 @@ per-session detail are visible in the dashboard
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import time
@@ -97,6 +98,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--instance-id", action="append", default=[])
     parser.add_argument("--timeout-seconds", type=float, default=3600.0)
     parser.add_argument("--runtime-backend", choices=["docker", "apptainer"], default="docker")
+    parser.add_argument(
+        "--eval-test-timeout",
+        type=float,
+        default=1200.0,
+        help="Seconds allowed for the swebench_harness evaluator's official "
+        "test run (eval.sh). Independent of --timeout-seconds -- the session "
+        "deadline can be generous while grading still gets cut off at this "
+        "default of 1200s. Raise this too if you don't want the eval step "
+        "truncating slow test suites.",
+    )
+    parser.add_argument(
+        "--eval-apply-timeout",
+        type=float,
+        default=60.0,
+        help="Seconds allowed for patch extraction + `git apply` on the fresh "
+        "eval runtime (swebench_harness evaluator config).",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="With --max-tasks (no --instance-id): skip instances that already "
+        "have a ses_*.json under this topology's rollout.save_dir, so growing "
+        "a batch (e.g. 50 -> 150) doesn't resubmit and rerun the first 50. "
+        "Counts any prior attempt, resolved or not.",
+    )
     parser.add_argument(
         "--block-github-lookups",
         action="store_true",
@@ -247,7 +273,30 @@ def docker_image_exists(image_ref: str) -> bool:
     ).returncode == 0
 
 
-def select_instances(args: argparse.Namespace) -> list[dict[str, Any]]:
+def already_attempted_instance_ids(save_dir: str | None) -> set[str]:
+    """Instance IDs with at least one ses_*.json already sitting in save_dir.
+
+    Used by --skip-existing so growing a batch (e.g. 50 -> 150 tasks) doesn't
+    resubmit and rerun instances a previous invocation already covered.
+    Counts *any* prior attempt, resolved or not -- rerun failures explicitly
+    via --instance-id rather than growing --max-tasks if that's what you want.
+    """
+    if not save_dir:
+        return set()
+    ids: set[str] = set()
+    for f in Path(save_dir).glob("task_*/ses_*.json"):
+        try:
+            d = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        task_meta = (d.get("trajectory") or {}).get("metadata", {}).get("task_metadata", {})
+        iid = task_meta.get("instance_id")
+        if iid:
+            ids.add(str(iid))
+    return ids
+
+
+def select_instances(args: argparse.Namespace, *, save_dir: str | None = None) -> list[dict[str, Any]]:
     instances = load_swebench_verified()
     if args.instance_id:
         wanted = set(args.instance_id)
@@ -256,6 +305,12 @@ def select_instances(args: argparse.Namespace) -> list[dict[str, Any]]:
         if missing:
             raise SystemExit(f"Unknown instance_id(s): {', '.join(missing)}")
         return selected
+    if args.skip_existing:
+        done = already_attempted_instance_ids(save_dir)
+        if done:
+            before = len(instances)
+            instances = [i for i in instances if str(i.get("instance_id")) not in done]
+            print(f"--skip-existing: {before - len(instances)} instance(s) already attempted in {save_dir}, skipping")
     if args.max_tasks > 0:
         return instances[: args.max_tasks]
     return instances
@@ -338,6 +393,8 @@ def build_task_request(args: argparse.Namespace, instance: dict[str, Any], batch
                 "patch_command": "cd /polar/session/workspace && git add -A && git diff --cached --binary",
                 "instance": instance,
                 "exclude_patterns": evaluator_exclude_patterns_for_harness(args.harness),
+                "apply_timeout": args.eval_apply_timeout,
+                "test_timeout": args.eval_test_timeout,
             },
             "refresh_runtime": True,
         },
@@ -383,7 +440,14 @@ def print_summary(stats: dict[str, tuple[int, int]], elapsed: float) -> None:
 def main() -> int:
     args = parse_args()
     batch_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    instances = select_instances(args)
+
+    from polar.config import TopologyConfig
+
+    topology = TopologyConfig.load(args.topology)
+    rollout_url = topology.rollout.public_url
+    save_dir = topology.rollout.save_dir
+
+    instances = select_instances(args, save_dir=save_dir)
     if not instances:
         raise SystemExit("No instances selected.")
 
@@ -397,11 +461,6 @@ def main() -> int:
         print(f"Skipping {len(missing)} instance(s) with missing images. Build them with: python build_images.py")
     instances = ready
 
-    from polar.config import TopologyConfig
-
-    topology = TopologyConfig.load(args.topology)
-    rollout_url = topology.rollout.public_url
-    save_dir = topology.rollout.save_dir
     print(f"Submitting {len(instances)} task(s) to {rollout_url} "
           f"(harness={args.harness}, samples={args.num_samples}, backend={args.runtime_backend})")
     if args.export_agentreplay and not save_dir:
