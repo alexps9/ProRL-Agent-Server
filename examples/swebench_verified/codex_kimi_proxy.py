@@ -37,12 +37,25 @@ it gives up with no output):
    one response.completed carrying the full object is the minimum codex's
    parser needs (see Handler._send_sse).
 
-Known upstream issue, not ours: Kimi-K3's Fireworks-hosted backend
-reproducibly 400s with "Floating point NaN (not-a-number) detected in
-generation" on codex's actual (long, multi-part) system/developer
-messages, even though the identical tool-calling shape works fine over a
-short, single-message request. Root-caused as far as: it's deterministic
-per invocation, not transient load -- not yet fixed here.
+Known upstream issue, not ours -- Kimi-K3 via this endpoint is not
+practically usable with codex's real request shape:
+
+Kimi-K3's Fireworks-hosted backend reproducibly 400s with "Floating point
+NaN (not-a-number) detected in generation" specifically on the combination
+of codex's ~20KB built-in system prompt + its tool declarations together
+(confirmed by direct replay + bisection against the real endpoint: neither
+piece alone fails, and a same-length benign filler swapped in for the real
+system prompt never fails, so it's not our translation and not pure
+length). Failure is probabilistic per identical request, not 100%
+deterministic, but at codex's actual scale it's frequent enough that
+retrying doesn't help -- call_upstream_with_retry's backoff retry (added
+here, and useful in general for transient 429/5xx) still failed 18/18
+across 3 fresh codex invocations x 6 retries each. Truncating the system
+prompt to dodge it was considered and rejected: it's not filler, it
+contains codex's actual task-execution/validation/tool-use instructions
+(Task execution, Validating your work, Tool Guidelines sections), so
+cutting it would likely degrade real task-solving quality rather than just
+work around a backend bug. No further mitigation attempted here.
 
 Requires env ``KIMI_API_KEY``. See ``codex_kimi_proxy.env.example`` and
 ``start_codex_kimi_proxy.sh``.
@@ -358,6 +371,76 @@ def inline_additional_tools(body: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Retry: Kimi-K3's Fireworks-hosted backend reproducibly (not just under
+# load) 400s with "Floating point NaN detected in generation" on some
+# request shapes -- confirmed via direct replay + bisection against the
+# real endpoint: not our translation (a same-length benign filler in place
+# of codex's real system prompt never fails), not pure length (short
+# truncations of the real content succeed reliably), specifically the
+# combination of codex's ~20KB built-in system prompt + tool declarations
+# together, and probabilistic rather than 100% deterministic for any given
+# byte-identical request (repeated replay of the exact same payload: some
+# attempts succeed, most don't). Truncating that system prompt to dodge it
+# was considered and rejected -- it's not filler, it contains codex's
+# actual task-execution/validation/tool-use instructions (Task execution,
+# Validating your work, Tool Guidelines sections), so cutting it would
+# likely degrade real task-solving quality, not just work around a
+# transport bug. Retrying is the only mitigation that costs nothing but
+# time.
+RETRY_MAX_ATTEMPTS = int(os.environ.get("CODEX_KIMI_RETRY_ATTEMPTS", "6"))
+RETRY_BASE_DELAY_SECONDS = float(os.environ.get("CODEX_KIMI_RETRY_DELAY", "2.0"))
+_RETRYABLE_MESSAGE_SNIPPETS = (
+    "floating point nan",
+    "app_overload",
+    "throttling_error",
+)
+
+
+class UpstreamHTTPError(Exception):
+    """Non-retryable (or retries exhausted) upstream HTTP error, body pre-read."""
+
+    def __init__(self, code: int, body: bytes) -> None:
+        super().__init__(f"upstream HTTP {code}")
+        self.code = code
+        self.body = body
+
+
+def _is_retryable(code: int, body: bytes) -> bool:
+    if code in (429, 500, 502, 503, 504):
+        return True
+    text = body.decode(errors="replace").lower()
+    return any(snippet in text for snippet in _RETRYABLE_MESSAGE_SNIPPETS)
+
+
+def call_upstream_with_retry(chat_body: dict[str, Any], req_id: int) -> dict[str, Any]:
+    for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+        upstream_req = urllib.request.Request(
+            f"{UPSTREAM}/chat/completions",
+            data=json.dumps(chat_body).encode(),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {API_KEY}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(upstream_req, timeout=600) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            body = e.read()
+            if not _is_retryable(e.code, body) or attempt == RETRY_MAX_ATTEMPTS:
+                raise UpstreamHTTPError(e.code, body) from None
+            delay = RETRY_BASE_DELAY_SECONDS * attempt
+            sys.stderr.write(
+                f"req={req_id} attempt {attempt}/{RETRY_MAX_ATTEMPTS} got retryable "
+                f"{e.code}, retrying in {delay:.1f}s: {body[:200]!r}\n"
+            )
+            _debug(req_id, f"RETRY attempt={attempt} code={e.code} body={body[:500]!r}")
+            time.sleep(delay)
+    raise AssertionError("unreachable")  # loop always returns or raises
+
+
+# ---------------------------------------------------------------------------
 # HTTP server
 # ---------------------------------------------------------------------------
 
@@ -422,23 +505,12 @@ class Handler(BaseHTTPRequestHandler):
         )
         _debug(req_id, f"CHAT REQUEST {json.dumps(chat_body, ensure_ascii=False)[:4000]}")
 
-        upstream_req = urllib.request.Request(
-            f"{UPSTREAM}/chat/completions",
-            data=json.dumps(chat_body).encode(),
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {API_KEY}",
-                "Content-Type": "application/json",
-            },
-        )
         try:
-            with urllib.request.urlopen(upstream_req, timeout=600) as resp:
-                chat_resp = json.loads(resp.read().decode())
-        except urllib.error.HTTPError as e:
-            err = e.read()
-            sys.stderr.write(f"upstream HTTP {e.code}: {err[:500]!r}\n")
-            _debug(req_id, f"HTTPError {e.code}: {err[:2000]!r}")
-            self._send(e.code, err or json.dumps({"error": str(e)}).encode())
+            chat_resp = call_upstream_with_retry(chat_body, req_id)
+        except UpstreamHTTPError as e:
+            sys.stderr.write(f"upstream HTTP {e.code} (out of retries): {e.body[:500]!r}\n")
+            _debug(req_id, f"HTTPError {e.code} (out of retries): {e.body[:2000]!r}")
+            self._send(e.code, e.body or json.dumps({"error": str(e)}).encode())
             return
         except Exception as e:  # noqa: BLE001
             sys.stderr.write(f"proxy error: {e}\n")
