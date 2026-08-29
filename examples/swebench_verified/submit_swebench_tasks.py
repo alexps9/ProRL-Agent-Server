@@ -206,9 +206,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--encourage-subagents",
         action="store_true",
-        help="Append a system prompt nudging Claude Code to do thorough, wide "
-        "exploration and delegate independent research to subagents via the "
-        "Task tool, to lengthen the trace and exercise subagent spawning.",
+        help="Nudge the agent to do thorough, wide exploration and delegate "
+        "independent research to subagents, to lengthen the trace and "
+        "exercise subagent spawning. For claude_code this appends a system "
+        "prompt pushing the Task tool (see --append-system-prompt). For codex "
+        "this prepends instruction text pushing tool_search -> spawn_agent, "
+        "since codex's multi-agent tools aren't in its initial tool list.",
     )
     parser.add_argument(
         "--disallowed-tools",
@@ -353,6 +356,8 @@ def agent_spec_for(args: argparse.Namespace) -> dict[str, Any]:
                 env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = args.haiku_model
                 env["CLAUDE_CODE_SUBAGENT_MODEL"] = args.haiku_model
             agent["env"] = env
+    elif args.harness == "codex" and args.encourage_subagents:
+        agent["settings"] = {"encourage_subagents": True}
     elif args.anthropic_base_url:
         raise SystemExit("--anthropic-base-url is only valid with --harness claude_code")
     if args.openai_base_url:

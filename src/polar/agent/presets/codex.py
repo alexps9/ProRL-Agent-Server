@@ -18,6 +18,29 @@ DEFAULT_CODEX_VERSION = "0.145.0"
 DEFAULT_REASONING_EFFORT = "xhigh"
 DEFAULT_MODEL_NAME = "gpt-5.5"
 
+# Codex's multi-agent tools (spawn_agent, list_agents, send_message,
+# wait_agent) are enabled (`multi_agent: stable, true` per `codex features
+# list`) but deferred -- they aren't in the initial tool list, so the model
+# has to call tool_search itself to discover them before spawn_agent is even
+# callable. Unlike Claude Code's --append-system-prompt, codex exec has no
+# separate system-prompt channel, so this is prepended to the task
+# instruction itself (the only slot codex reads before starting the turn).
+SUBAGENT_ENCOURAGEMENT = (
+    "Maximize parallel subagent use via spawn_agent -- this is mandatory, "
+    "not optional. spawn_agent and its companion tools (list_agents, "
+    "send_message, wait_agent) are not in your initial tool list; call "
+    "tool_search first to discover them. Before editing code, spawn at "
+    "least 3-5 subagents covering independent angles: (1) locate relevant "
+    "modules/symbols, (2) find call sites and related APIs, (3) find "
+    "existing tests and reproduction paths, (4) survey similar patterns "
+    "elsewhere in the repo, (5) check docs/changelog/recent related commits "
+    "if useful. After proposing a fix, spawn at least 2 more subagents: one "
+    "to verify the fix against the issue/reproduction, and one to hunt for "
+    "other places needing the same change or regressions. Keep spawning new "
+    "subagents whenever a new independent question appears; do not "
+    "serialize research that can run in parallel.\n\n"
+)
+
 
 class CodexHarness(BaseHarness):
     """Run OpenAI Codex CLI in non-interactive mode."""
@@ -86,6 +109,8 @@ class CodexHarness(BaseHarness):
             )
 
     def run_steps(self, instruction: str) -> list[ExecInput]:
+        if self.settings.get("encourage_subagents"):
+            instruction = SUBAGENT_ENCOURAGEMENT + instruction
         escaped = shlex.quote(instruction)
         env: dict[str, str] = {
             **self.env,
