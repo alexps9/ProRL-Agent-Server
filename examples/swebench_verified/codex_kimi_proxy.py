@@ -37,25 +37,13 @@ it gives up with no output):
    one response.completed carrying the full object is the minimum codex's
    parser needs (see Handler._send_sse).
 
-Known upstream issue, not ours -- Kimi-K3 via this endpoint is not
-practically usable with codex's real request shape:
-
-Kimi-K3's Fireworks-hosted backend reproducibly 400s with "Floating point
-NaN (not-a-number) detected in generation" specifically on the combination
-of codex's ~20KB built-in system prompt + its tool declarations together
-(confirmed by direct replay + bisection against the real endpoint: neither
-piece alone fails, and a same-length benign filler swapped in for the real
-system prompt never fails, so it's not our translation and not pure
-length). Failure is probabilistic per identical request, not 100%
-deterministic, but at codex's actual scale it's frequent enough that
-retrying doesn't help -- call_upstream_with_retry's backoff retry (added
-here, and useful in general for transient 429/5xx) still failed 18/18
-across 3 fresh codex invocations x 6 retries each. Truncating the system
-prompt to dodge it was considered and rejected: it's not filler, it
-contains codex's actual task-execution/validation/tool-use instructions
-(Task execution, Validating your work, Tool Guidelines sections), so
-cutting it would likely degrade real task-solving quality rather than just
-work around a backend bug. No further mitigation attempted here.
+Historical upstream issue: Kimi-K3's Fireworks backend previously returned
+"Floating point NaN (not-a-number) detected in generation" for Codex's full
+system prompt plus tool declarations. The proxy deliberately does not truncate
+either input. The backend no longer reproduced that failure in two real
+SWE-bench runs on 2026-09-02 (29 full Codex requests, zero NaN errors), but the
+error remains classified as retryable together with 429/5xx responses in case
+the probabilistic backend failure recurs.
 
 Requires env ``KIMI_API_KEY``. See ``codex_kimi_proxy.env.example`` and
 ``start_codex_kimi_proxy.sh``.
@@ -255,7 +243,11 @@ def translate_input(input_items: list[Any], instructions: str | None) -> list[di
 # ---------------------------------------------------------------------------
 
 
-def translate_response(chat_resp: dict[str, Any], model: str) -> dict[str, Any]:
+def translate_response(
+    chat_resp: dict[str, Any],
+    model: str,
+    custom_tool_names: set[str] | None = None,
+) -> dict[str, Any]:
     choice = (chat_resp.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     output: list[dict[str, Any]] = []
@@ -300,7 +292,12 @@ def translate_response(chat_resp: dict[str, Any], model: str) -> dict[str, Any]:
             parsed = json.loads(raw_args)
         except (TypeError, ValueError):
             parsed = None
-        if isinstance(parsed, dict) and set(parsed.keys()) == {"input"} and isinstance(parsed["input"], str):
+        if (
+            name in (custom_tool_names or set())
+            and isinstance(parsed, dict)
+            and set(parsed.keys()) == {"input"}
+            and isinstance(parsed["input"], str)
+        ):
             # Round-trips a _wrap_custom_tool()-shaped call back to custom_tool_call.
             output.append({
                 "type": "custom_tool_call",
@@ -371,24 +368,12 @@ def inline_additional_tools(body: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Retry: Kimi-K3's Fireworks-hosted backend reproducibly (not just under
-# load) 400s with "Floating point NaN detected in generation" on some
-# request shapes -- confirmed via direct replay + bisection against the
-# real endpoint: not our translation (a same-length benign filler in place
-# of codex's real system prompt never fails), not pure length (short
-# truncations of the real content succeed reliably), specifically the
-# combination of codex's ~20KB built-in system prompt + tool declarations
-# together, and probabilistic rather than 100% deterministic for any given
-# byte-identical request (repeated replay of the exact same payload: some
-# attempts succeed, most don't). Truncating that system prompt to dodge it
-# was considered and rejected -- it's not filler, it contains codex's
-# actual task-execution/validation/tool-use instructions (Task execution,
-# Validating your work, Tool Guidelines sections), so cutting it would
-# likely degrade real task-solving quality, not just work around a
-# transport bug. Retrying is the only mitigation that costs nothing but
-# time.
-RETRY_MAX_ATTEMPTS = int(os.environ.get("CODEX_KIMI_RETRY_ATTEMPTS", "6"))
-RETRY_BASE_DELAY_SECONDS = float(os.environ.get("CODEX_KIMI_RETRY_DELAY", "2.0"))
+# Retry transient capacity errors and the historical Fireworks NaN failure.
+# Keep the complete Codex prompt/tool surface intact; silently truncating either
+# would change the agent workload whose trace this proxy is meant to capture.
+RETRY_MAX_ATTEMPTS = int(os.environ.get("CODEX_KIMI_RETRY_ATTEMPTS", "20"))
+RETRY_BASE_DELAY_SECONDS = float(os.environ.get("CODEX_KIMI_RETRY_DELAY", "5.0"))
+RETRY_MAX_DELAY_SECONDS = float(os.environ.get("CODEX_KIMI_RETRY_MAX_DELAY", "60.0"))
 _RETRYABLE_MESSAGE_SNIPPETS = (
     "floating point nan",
     "app_overload",
@@ -430,7 +415,15 @@ def call_upstream_with_retry(chat_body: dict[str, Any], req_id: int) -> dict[str
             body = e.read()
             if not _is_retryable(e.code, body) or attempt == RETRY_MAX_ATTEMPTS:
                 raise UpstreamHTTPError(e.code, body) from None
-            delay = RETRY_BASE_DELAY_SECONDS * attempt
+            retry_after = e.headers.get("Retry-After")
+            try:
+                retry_after_seconds = float(retry_after) if retry_after else 0.0
+            except ValueError:
+                retry_after_seconds = 0.0
+            delay = max(
+                retry_after_seconds,
+                min(RETRY_MAX_DELAY_SECONDS, RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))),
+            )
             sys.stderr.write(
                 f"req={req_id} attempt {attempt}/{RETRY_MAX_ATTEMPTS} got retryable "
                 f"{e.code}, retrying in {delay:.1f}s: {body[:200]!r}\n"
@@ -493,7 +486,13 @@ class Handler(BaseHTTPRequestHandler):
             "model": model,
             "messages": translate_input(body.get("input") or [], body.get("instructions")),
         }
-        tools = translate_tools(body.get("tools") or [])
+        response_tools = body.get("tools") or []
+        custom_tool_names = {
+            str(tool.get("name"))
+            for tool in response_tools
+            if isinstance(tool, dict) and tool.get("type") == "custom" and tool.get("name")
+        }
+        tools = translate_tools(response_tools)
         if tools:
             chat_body["tools"] = tools
         if body.get("max_output_tokens"):
@@ -519,14 +518,18 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         _debug(req_id, f"CHAT RESPONSE {json.dumps(chat_resp, ensure_ascii=False)[:4000]}")
-        resp_body = translate_response(chat_resp, body.get("model") or model)
+        resp_body = translate_response(
+            chat_resp,
+            body.get("model") or model,
+            custom_tool_names=custom_tool_names,
+        )
         if body.get("stream"):
             self._send_sse(resp_body)
         else:
             self._send(200, json.dumps(resp_body).encode())
 
     def _send_sse(self, response: dict[str, Any]) -> None:
-        """Emit `response` as the minimal SSE event sequence codex needs.
+        """Emit a complete Responses-API SSE lifecycle for Codex.
 
         Codex requests stream=true and, even after its WebSocket transport
         falls back to plain HTTPS, still expects a real text/event-stream
@@ -538,8 +541,12 @@ class Handler(BaseHTTPRequestHandler):
         response content changes had zero effect). We don't stream real
         incremental deltas from the upstream chat/completions call (it's
         already a single non-streamed response by the time we have it) --
-        one response.created + one response.completed carrying the full
-        object is the minimum codex's parser needs to consider the turn done.
+        response.completed event is necessary but not sufficient: Codex builds
+        messages and tool calls from the incremental output-item events. Sending
+        only created+completed makes it report a successful empty turn and drop
+        an upstream tool call without executing it (reproduced with Codex
+        0.145.0 and 0.152.1). Emit the same item/content/argument lifecycle as a
+        native Responses stream, even though the upstream call was buffered.
         """
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -553,10 +560,165 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             self.wfile.write(b"\r\n")
 
-        created_response = {**response, "output": [], "status": "in_progress"}
-        write_event("response.created", {"type": "response.created", "response": created_response})
-        write_event("response.completed", {"type": "response.completed", "response": response})
+        for event in response_sse_events(response):
+            write_event(event["type"], event)
         self.wfile.write(b"0\r\n\r\n")
+
+
+def response_sse_events(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expand one buffered Responses object into Codex-consumable SSE events."""
+    created_response = {**response, "output": [], "status": "in_progress"}
+    events: list[dict[str, Any]] = [
+        {"type": "response.created", "response": created_response}
+    ]
+
+    for output_index, item in enumerate(response.get("output") or []):
+        item_type = item.get("type")
+        in_progress = {**item, "status": "in_progress"}
+
+        if item_type == "message":
+            in_progress["content"] = []
+        elif item_type == "function_call":
+            in_progress["arguments"] = ""
+        elif item_type == "custom_tool_call":
+            in_progress["input"] = ""
+        elif item_type == "reasoning":
+            in_progress["summary"] = []
+
+        events.append(
+            {
+                "type": "response.output_item.added",
+                "output_index": output_index,
+                "item": in_progress,
+            }
+        )
+
+        if item_type == "message":
+            for content_index, part in enumerate(item.get("content") or []):
+                text = part.get("text") or ""
+                empty_part = {**part, "text": ""}
+                events.append(
+                    {
+                        "type": "response.content_part.added",
+                        "output_index": output_index,
+                        "content_index": content_index,
+                        "part": empty_part,
+                    }
+                )
+                if text:
+                    events.append(
+                        {
+                            "type": "response.output_text.delta",
+                            "output_index": output_index,
+                            "content_index": content_index,
+                            "delta": text,
+                        }
+                    )
+                events.append(
+                    {
+                        "type": "response.output_text.done",
+                        "output_index": output_index,
+                        "content_index": content_index,
+                        "text": text,
+                    }
+                )
+                events.append(
+                    {
+                        "type": "response.content_part.done",
+                        "output_index": output_index,
+                        "content_index": content_index,
+                        "part": part,
+                    }
+                )
+        elif item_type == "function_call":
+            arguments = item.get("arguments") or ""
+            if arguments:
+                events.append(
+                    {
+                        "type": "response.function_call_arguments.delta",
+                        "output_index": output_index,
+                        "item_id": item.get("id"),
+                        "delta": arguments,
+                    }
+                )
+            events.append(
+                {
+                    "type": "response.function_call_arguments.done",
+                    "output_index": output_index,
+                    "item_id": item.get("id"),
+                    "arguments": arguments,
+                }
+            )
+        elif item_type == "custom_tool_call":
+            tool_input = item.get("input") or ""
+            if tool_input:
+                events.append(
+                    {
+                        "type": "response.custom_tool_call_input.delta",
+                        "output_index": output_index,
+                        "item_id": item.get("id"),
+                        "delta": tool_input,
+                    }
+                )
+            events.append(
+                {
+                    "type": "response.custom_tool_call_input.done",
+                    "output_index": output_index,
+                    "item_id": item.get("id"),
+                    "input": tool_input,
+                }
+            )
+        elif item_type == "reasoning":
+            for summary_index, part in enumerate(item.get("summary") or []):
+                text = part.get("text") or ""
+                events.append(
+                    {
+                        "type": "response.reasoning_summary_part.added",
+                        "item_id": item.get("id"),
+                        "output_index": output_index,
+                        "summary_index": summary_index,
+                        "part": {**part, "text": ""},
+                    }
+                )
+                if text:
+                    events.append(
+                        {
+                            "type": "response.reasoning_summary_text.delta",
+                            "item_id": item.get("id"),
+                            "output_index": output_index,
+                            "summary_index": summary_index,
+                            "delta": text,
+                        }
+                    )
+                events.append(
+                    {
+                        "type": "response.reasoning_summary_text.done",
+                        "item_id": item.get("id"),
+                        "output_index": output_index,
+                        "summary_index": summary_index,
+                        "text": text,
+                    }
+                )
+                events.append(
+                    {
+                        "type": "response.reasoning_summary_part.done",
+                        "item_id": item.get("id"),
+                        "output_index": output_index,
+                        "summary_index": summary_index,
+                        "part": part,
+                    }
+                )
+
+        events.append(
+            {
+                "type": "response.output_item.done",
+                "output_index": output_index,
+                "item": item,
+            }
+        )
+
+    events.append({"type": "response.completed", "response": response})
+    return events
 
 
 def main() -> None:

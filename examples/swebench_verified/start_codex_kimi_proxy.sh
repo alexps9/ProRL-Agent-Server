@@ -9,6 +9,9 @@
 #   CODEX_KIMI_PROXY_PORT  (default 3458)
 #   CODEX_KIMI_UPSTREAM    (default https://api.llama.com/experimental/compat/openai/v1)
 #   CODEX_KIMI_DEBUG=0     (disable /tmp debug log)
+#   CODEX_KIMI_RETRY_ATTEMPTS  (default 20)
+#   CODEX_KIMI_RETRY_DELAY     (default 5 seconds, exponential backoff)
+#   CODEX_KIMI_RETRY_MAX_DELAY (default 60 seconds)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
