@@ -127,3 +127,7 @@ examples/swebench_verified/agentreplay_classified/
 examples/swebench_verified/agentreplay_converted/
 examples/swebench_verified/agentreplay_export*/
 examples/swebench_verified/higress_ab/.env
+
+# Personal, port-shifted topology configs (not meant to be shared)
+examples/swebench_verified/topology.local*.yaml
+examples/swebench_verified/topology.claude61.yaml

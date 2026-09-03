@@ -18,27 +18,36 @@ DEFAULT_CODEX_VERSION = "0.145.0"
 DEFAULT_REASONING_EFFORT = "xhigh"
 DEFAULT_MODEL_NAME = "gpt-5.5"
 
-# Codex's multi-agent tools (spawn_agent, list_agents, send_message,
-# wait_agent) are enabled (`multi_agent: stable, true` per `codex features
-# list`) but deferred -- they aren't in the initial tool list, so the model
-# has to call tool_search itself to discover them before spawn_agent is even
-# callable. Unlike Claude Code's --append-system-prompt, codex exec has no
-# separate system-prompt channel, so this is prepended to the task
-# instruction itself (the only slot codex reads before starting the turn).
+# Codex's multi-agent collaboration tools (spawn_agent, followup_task,
+# send_message, wait_agent, list_agents, interrupt_agent) only surface when
+# the `multi_agent_v2` feature is enabled -- `multi_agent` alone (stable/true
+# by default) does NOT put them in the tool list, and `tool_search` was
+# removed in codex 0.145.0, so the older "call tool_search to discover them"
+# path is dead (verified: an --encourage-subagents run on 0.145.0 tried
+# tool_search, got "not available in the advertised tool registry", and fell
+# back to plain exec). `encourage_subagents` therefore also flips on
+# `--enable multi_agent_v2` (see run_steps). With v2 on, codex injects a
+# "team of agents" developer prompt describing the tools; they are DIRECT
+# tool calls (to=functions.collaboration.spawn_agent), never callable from
+# inside functions.exec. Codex exec has no --append-system-prompt channel, so
+# this nudge is prepended to the task instruction (the only slot codex reads
+# before the first turn).
 SUBAGENT_ENCOURAGEMENT = (
-    "Maximize parallel subagent use via spawn_agent -- this is mandatory, "
-    "not optional. spawn_agent and its companion tools (list_agents, "
-    "send_message, wait_agent) are not in your initial tool list; call "
-    "tool_search first to discover them. Before editing code, spawn at "
-    "least 3-5 subagents covering independent angles: (1) locate relevant "
-    "modules/symbols, (2) find call sites and related APIs, (3) find "
-    "existing tests and reproduction paths, (4) survey similar patterns "
-    "elsewhere in the repo, (5) check docs/changelog/recent related commits "
-    "if useful. After proposing a fix, spawn at least 2 more subagents: one "
-    "to verify the fix against the issue/reproduction, and one to hunt for "
-    "other places needing the same change or regressions. Keep spawning new "
-    "subagents whenever a new independent question appears; do not "
-    "serialize research that can run in parallel.\n\n"
+    "You lead a team of equally-capable agents. Using the collaboration tools "
+    "(spawn_agent, followup_task, send_message, wait_agent, list_agents) "
+    "heavily is mandatory, not optional -- call them directly, not from "
+    "inside exec. Before editing code, spawn 3-5 sub-agents covering "
+    "independent angles: (1) locate relevant modules/symbols, (2) find call "
+    "sites and related APIs, (3) find existing tests and reproduction paths, "
+    "(4) survey similar patterns elsewhere in the repo, (5) check "
+    "docs/changelog/recent related commits if useful. There are 4 "
+    "concurrency slots -- keep ~3 sub-agents running in parallel and "
+    "wait_agent on them instead of doing the research serially yourself. "
+    "After proposing a fix, spawn at least 2 more: one to verify the fix "
+    "against the issue/reproduction, one to hunt for other places needing "
+    "the same change or regressions. Keep spawning whenever a new "
+    "independent question appears. Act via tool calls; keep narration "
+    "brief.\n\n"
 )
 
 
@@ -109,7 +118,8 @@ class CodexHarness(BaseHarness):
             )
 
     def run_steps(self, instruction: str) -> list[ExecInput]:
-        if self.settings.get("encourage_subagents"):
+        encourage_subagents = bool(self.settings.get("encourage_subagents"))
+        if encourage_subagents:
             instruction = SUBAGENT_ENCOURAGEMENT + instruction
         escaped = shlex.quote(instruction)
         env: dict[str, str] = {
@@ -127,6 +137,11 @@ class CodexHarness(BaseHarness):
         model = _cli_model_name(self.model_name)
         flags.append(f"--model {shlex.quote(model)}")
         flags.extend(["--json", "--enable unified_exec"])
+        if encourage_subagents:
+            # Surface the collaboration tools (spawn_agent, followup_task, ...).
+            # `multi_agent` is on by default but does not add them to the tool
+            # list; `multi_agent_v2` does and injects the team developer prompt.
+            flags.append("--enable multi_agent_v2")
 
         for key, cli in [
             ("reasoning_effort", "-c model_reasoning_effort"),

@@ -210,8 +210,9 @@ def parse_args() -> argparse.Namespace:
         "independent research to subagents, to lengthen the trace and "
         "exercise subagent spawning. For claude_code this appends a system "
         "prompt pushing the Task tool (see --append-system-prompt). For codex "
-        "this prepends instruction text pushing tool_search -> spawn_agent, "
-        "since codex's multi-agent tools aren't in its initial tool list.",
+        "this enables the multi_agent_v2 feature (which surfaces spawn_agent / "
+        "followup_task / wait_agent) and prepends instruction text pushing "
+        "parallel delegation to them.",
     )
     parser.add_argument(
         "--disallowed-tools",
