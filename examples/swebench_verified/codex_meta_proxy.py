@@ -385,6 +385,68 @@ def _debug(req_id: int, msg: str) -> None:
 
 _REQUEST_COUNTER = 0
 
+# Model API occasionally returns transient capacity failures for long agent
+# turns. Retrying the identical Responses request is safe: no hosted tools are
+# executed upstream, and Codex only receives the response after this buffered
+# call completes.
+RETRY_MAX_ATTEMPTS = int(os.environ.get("CODEX_META_RETRY_ATTEMPTS", "20"))
+RETRY_BASE_DELAY_SECONDS = float(os.environ.get("CODEX_META_RETRY_DELAY", "5.0"))
+RETRY_MAX_DELAY_SECONDS = float(os.environ.get("CODEX_META_RETRY_MAX_DELAY", "60.0"))
+_RETRYABLE_MESSAGE_SNIPPETS = ("app_overload", "throttling_error")
+
+
+class UpstreamHTTPError(Exception):
+    """Upstream HTTP error whose response body has already been consumed."""
+
+    def __init__(self, code: int, body: bytes) -> None:
+        super().__init__(f"upstream HTTP {code}")
+        self.code = code
+        self.body = body
+
+
+def _is_retryable(code: int, body: bytes) -> bool:
+    if code in (429, 500, 502, 503, 504):
+        return True
+    text = body.decode(errors="replace").lower()
+    return any(snippet in text for snippet in _RETRYABLE_MESSAGE_SNIPPETS)
+
+
+def call_upstream_with_retry(body: dict[str, Any], req_id: int) -> tuple[int, bytes]:
+    for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+        upstream_req = urllib.request.Request(
+            f"{UPSTREAM}/responses",
+            data=json.dumps(body).encode(),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {API_KEY}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(upstream_req, timeout=600) as resp:
+                return resp.status, resp.read()
+        except urllib.error.HTTPError as e:
+            error_body = e.read()
+            if not _is_retryable(e.code, error_body) or attempt == RETRY_MAX_ATTEMPTS:
+                raise UpstreamHTTPError(e.code, error_body) from None
+            retry_after = e.headers.get("Retry-After")
+            try:
+                retry_after_seconds = float(retry_after) if retry_after else 0.0
+            except ValueError:
+                retry_after_seconds = 0.0
+            delay = max(
+                retry_after_seconds,
+                min(RETRY_MAX_DELAY_SECONDS, RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))),
+            )
+            sys.stderr.write(
+                f"req={req_id} attempt {attempt}/{RETRY_MAX_ATTEMPTS} got retryable "
+                f"{e.code}, retrying in {delay:.1f}s: {error_body[:200]!r}\n"
+            )
+            _debug(req_id, f"RETRY attempt={attempt} code={e.code} body={error_body[:500]!r}")
+            time.sleep(delay)
+    raise AssertionError("unreachable")
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -456,24 +518,13 @@ class Handler(BaseHTTPRequestHandler):
         if body.get("tools"):
             _debug(req_id, "TOOLS " + json.dumps(body["tools"], ensure_ascii=False))
 
-        upstream_req = urllib.request.Request(
-            f"{UPSTREAM}/responses",
-            data=json.dumps(body).encode(),
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {API_KEY}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-        )
         try:
-            with urllib.request.urlopen(upstream_req, timeout=600) as resp:
-                data = resp.read()
+            status, data = call_upstream_with_retry(body, req_id)
             try:
                 obj = json.loads(data.decode())
             except ValueError:
                 _debug(req_id, f"RESPONSE non-JSON bytes={len(data)}")
-                self._send(resp.status, data, "application/json")
+                self._send(status, data, "application/json")
                 return
             strip_functions_prefix(obj)
             split_namespaced_calls(obj)
@@ -483,8 +534,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_sse(obj)
             else:
                 self._send(200, json.dumps(obj, ensure_ascii=False).encode())
-        except urllib.error.HTTPError as e:
-            err = e.read()
+        except UpstreamHTTPError as e:
+            err = e.body
             sys.stderr.write(f"upstream HTTP {e.code}: {err[:500]!r}\n")
             _debug(req_id, f"HTTPError {e.code}: {err[:2000]!r}")
             m = re.search(rb"input\[(\d+)\]", err)

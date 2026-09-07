@@ -58,6 +58,8 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+import collections
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -367,6 +369,139 @@ def inline_additional_tools(body: dict[str, Any]) -> None:
         body["tools"] = [*(body.get("tools") or []), *extra_tools]
 
 
+def flatten_namespace_tools(tools: list[Any]) -> list[Any]:
+    """Flatten Codex multi_agent_v2 namespaces for chat function calling."""
+    out: list[Any] = []
+    for tool in tools:
+        if isinstance(tool, dict) and tool.get("type") == "namespace":
+            namespace = str(tool.get("name") or "")
+            for inner in tool.get("tools") or []:
+                if not isinstance(inner, dict):
+                    continue
+                inner = {**inner}
+                if namespace and namespace != "functions" and isinstance(inner.get("name"), str):
+                    inner["name"] = f"{namespace}.{inner['name']}"
+                parameters = inner.get("parameters")
+                properties = parameters.get("properties") if isinstance(parameters, dict) else None
+                if isinstance(properties, dict):
+                    parameters = {**parameters, "properties": {k: dict(v) if isinstance(v, dict) else v for k, v in properties.items()}}
+                    inner["parameters"] = parameters
+                    for spec in parameters["properties"].values():
+                        if isinstance(spec, dict):
+                            spec.pop("encrypted", None)
+                out.append(inner)
+        else:
+            out.append(tool)
+    return out
+
+
+def strip_functions_prefix(obj: Any) -> None:
+    if isinstance(obj, dict):
+        name = obj.get("name")
+        if isinstance(name, str) and name.startswith("functions."):
+            obj["name"] = name[len("functions."):]
+        for value in obj.values():
+            strip_functions_prefix(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            strip_functions_prefix(value)
+
+
+def split_namespaced_calls(obj: Any) -> None:
+    if isinstance(obj, dict):
+        if obj.get("type") == "function_call" and isinstance(obj.get("name"), str) and "." in obj["name"] and not obj.get("namespace"):
+            namespace, _, name = obj["name"].partition(".")
+            obj["name"] = name
+            obj["namespace"] = namespace
+        for value in obj.values():
+            split_namespaced_calls(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            split_namespaced_calls(value)
+
+
+_SENT_MSGS: dict[tuple[str, str], list[str]] = collections.defaultdict(list)
+_PENDING_LOCK = threading.Lock()
+
+
+def _session_key(body: dict[str, Any]) -> str:
+    key = body.get("prompt_cache_key")
+    if isinstance(key, str) and key:
+        return key
+    for item in body.get("input") or []:
+        if isinstance(item, dict) and item.get("type") == "message":
+            for part in item.get("content") or []:
+                if isinstance(part, dict) and part.get("text"):
+                    return str(hash(str(part["text"])[:2000]))
+    return "_"
+
+
+def _current_agent_path(input_items: list[Any]) -> str:
+    for item in reversed(input_items):
+        if isinstance(item, dict) and item.get("type") == "agent_message" and item.get("recipient"):
+            return str(item["recipient"])
+    return "/root"
+
+
+def _canon_target(target: str, sender_path: str) -> str:
+    target = (target or "").strip()
+    if target.startswith("/"):
+        return target
+    return f"{sender_path.rstrip('/')}/{target}" if target else sender_path
+
+
+def record_outgoing_agent_messages(response_obj: dict[str, Any], request_input: list[Any], session: str) -> None:
+    sender = _current_agent_path(request_input if isinstance(request_input, list) else [])
+    for item in response_obj.get("output") or []:
+        if not (isinstance(item, dict) and item.get("type") == "function_call"):
+            continue
+        name = item.get("name")
+        if name not in ("spawn_agent", "send_message", "followup_task"):
+            continue
+        try:
+            arguments = json.loads(item.get("arguments") or "{}")
+        except ValueError:
+            continue
+        message = arguments.get("message")
+        if not isinstance(message, str) or not message:
+            continue
+        target = _canon_target(
+            arguments.get("task_name", "") if name == "spawn_agent" else arguments.get("target", ""),
+            sender,
+        )
+        with _PENDING_LOCK:
+            _SENT_MSGS[(session, target)].append(message)
+        if DEBUG:
+            sys.stderr.write(f"[pending] +{name} sender={sender!r} target={target!r} msg={message[:50]!r}\n")
+
+
+def normalize_agent_messages(body: dict[str, Any], session: str) -> None:
+    input_items = body.get("input")
+    if not isinstance(input_items, list):
+        return
+    seen: dict[str, int] = collections.defaultdict(int)
+    for index, item in enumerate(input_items):
+        if not (isinstance(item, dict) and item.get("type") == "agent_message"):
+            continue
+        recipient = str(item.get("recipient") or "")
+        parts: list[Any] = []
+        for part in item.get("content") or []:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "encrypted_content":
+                position = seen[recipient]
+                seen[recipient] += 1
+                with _PENDING_LOCK:
+                    sent = _SENT_MSGS.get((session, recipient)) or []
+                    text = sent[position] if position < len(sent) else None
+                if DEBUG:
+                    sys.stderr.write(f"[pending] lookup recipient={recipient!r} k={position} hit={text is not None}\n")
+                parts.append({"type": "input_text", "text": text or "[cross-agent payload unavailable -- ask the sender to resend as plain text]"})
+            else:
+                parts.append(part)
+        input_items[index] = {"type": "message", "role": "user", "content": parts or [{"type": "input_text", "text": ""}]}
+
+
 # ---------------------------------------------------------------------------
 # Retry transient capacity errors and the historical Fireworks NaN failure.
 # Keep the complete Codex prompt/tool surface intact; silently truncating either
@@ -374,6 +509,7 @@ def inline_additional_tools(body: dict[str, Any]) -> None:
 RETRY_MAX_ATTEMPTS = int(os.environ.get("CODEX_KIMI_RETRY_ATTEMPTS", "20"))
 RETRY_BASE_DELAY_SECONDS = float(os.environ.get("CODEX_KIMI_RETRY_DELAY", "5.0"))
 RETRY_MAX_DELAY_SECONDS = float(os.environ.get("CODEX_KIMI_RETRY_MAX_DELAY", "60.0"))
+DEFAULT_MAX_TOKENS = int(os.environ.get("CODEX_KIMI_MAX_TOKENS", "8192"))
 _RETRYABLE_MESSAGE_SNIPPETS = (
     "floating point nan",
     "app_overload",
@@ -481,12 +617,16 @@ class Handler(BaseHTTPRequestHandler):
         req_id = _REQUEST_COUNTER
 
         inline_additional_tools(body)
+        strip_functions_prefix(body)
+        session = _session_key(body)
+        original_input = list(body.get("input") or [])
+        normalize_agent_messages(body, session)
         model = map_model(body.get("model"))
         chat_body: dict[str, Any] = {
             "model": model,
             "messages": translate_input(body.get("input") or [], body.get("instructions")),
         }
-        response_tools = body.get("tools") or []
+        response_tools = flatten_namespace_tools(body.get("tools") or [])
         custom_tool_names = {
             str(tool.get("name"))
             for tool in response_tools
@@ -495,8 +635,7 @@ class Handler(BaseHTTPRequestHandler):
         tools = translate_tools(response_tools)
         if tools:
             chat_body["tools"] = tools
-        if body.get("max_output_tokens"):
-            chat_body["max_tokens"] = body["max_output_tokens"]
+        chat_body["max_tokens"] = body.get("max_output_tokens") or DEFAULT_MAX_TOKENS
 
         sys.stderr.write(
             f"-> upstream model={body.get('model')}->{model} "
@@ -523,6 +662,9 @@ class Handler(BaseHTTPRequestHandler):
             body.get("model") or model,
             custom_tool_names=custom_tool_names,
         )
+        strip_functions_prefix(resp_body)
+        split_namespaced_calls(resp_body)
+        record_outgoing_agent_messages(resp_body, original_input, session)
         if body.get("stream"):
             self._send_sse(resp_body)
         else:

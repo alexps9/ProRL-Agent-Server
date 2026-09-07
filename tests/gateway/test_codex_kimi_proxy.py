@@ -83,3 +83,64 @@ def test_regular_single_input_function_is_not_misclassified_as_custom() -> None:
     )
 
     assert response["output"][1]["type"] == "function_call"
+
+
+def test_multi_agent_namespace_round_trip() -> None:
+    tools = [{
+        "type": "namespace",
+        "name": "collaboration",
+        "tools": [{
+            "type": "function",
+            "name": "spawn_agent",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_name": {"type": "string"},
+                    "message": {"type": "string", "encrypted": True},
+                },
+            },
+        }],
+    }]
+    flattened = proxy.flatten_namespace_tools(tools)
+    assert flattened[0]["name"] == "collaboration.spawn_agent"
+    assert "encrypted" not in flattened[0]["parameters"]["properties"]["message"]
+    translated = proxy.translate_tools(flattened)
+    assert translated[0]["function"]["name"] == "collaboration.spawn_agent"
+
+    response = proxy.translate_response(
+        _chat_response(
+            "collaboration.spawn_agent",
+            '{"task_name":"reviewer","message":"Inspect the tests"}',
+        ),
+        "kimi-k3",
+    )
+    proxy.split_namespaced_calls(response)
+    call = response["output"][1]
+    assert call["name"] == "spawn_agent"
+    assert call["namespace"] == "collaboration"
+
+
+def test_agent_message_plaintext_reinjection() -> None:
+    proxy._SENT_MSGS.clear()
+    session = "kimi-session"
+    proxy.record_outgoing_agent_messages(
+        {"output": [{
+            "type": "function_call",
+            "name": "spawn_agent",
+            "arguments": '{"task_name":"reviewer","message":"Inspect the tests"}',
+        }]},
+        [],
+        session,
+    )
+    body = {"input": [{
+        "type": "agent_message",
+        "recipient": "/root/reviewer",
+        "content": [{"type": "encrypted_content", "encrypted_content": "opaque"}],
+    }]}
+    proxy.normalize_agent_messages(body, session)
+    assert body["input"][0]["type"] == "message"
+    assert body["input"][0]["content"][0]["text"] == "Inspect the tests"
+
+
+def test_kimi_default_max_tokens_is_large_enough_for_agent_turns() -> None:
+    assert proxy.DEFAULT_MAX_TOKENS >= 8192

@@ -3,6 +3,9 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from unittest.mock import patch
+
+import urllib.error
 
 
 MODULE_PATH = (
@@ -164,3 +167,39 @@ def test_response_sse_events_lifecycle_preserves_items() -> None:
     assert done[0]["item"]["encrypted_content"] == "enc"
     assert done[1]["item"]["namespace"] == "collaboration"
     assert evs[-1]["response"]["output"] == resp["output"]
+
+
+def test_retryable_capacity_errors() -> None:
+    assert proxy._is_retryable(429, b"rate limited")
+    assert proxy._is_retryable(500, b"anything")
+    assert proxy._is_retryable(400, b'{"code":"APP_OVERLOAD"}')
+    assert proxy._is_retryable(400, b'{"code":"THROTTLING_ERROR"}')
+    assert not proxy._is_retryable(400, b'{"code":"INVALID_ARGUMENT"}')
+
+
+def test_upstream_retry_then_success() -> None:
+    retry = urllib.error.HTTPError(
+        "https://example.invalid/responses", 429, "busy", {}, None
+    )
+    retry.read = lambda: b'{"code":"THROTTLING_ERROR"}'
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return b'{"id":"response-ok"}'
+
+    with (
+        patch.object(proxy.urllib.request, "urlopen", side_effect=[retry, Response()]) as urlopen,
+        patch.object(proxy.time, "sleep") as sleep,
+    ):
+        status, body = proxy.call_upstream_with_retry({"model": "deepseek-v4-pro"}, 7)
+    assert status == 200 and json.loads(body)["id"] == "response-ok"
+    assert urlopen.call_count == 2
+    sleep.assert_called_once()
